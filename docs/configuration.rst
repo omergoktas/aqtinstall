@@ -31,6 +31,8 @@ A file is like as follows:
     retry_backoff: 0.1
     max_retries_on_checksum_error: 5
     max_retries_to_retrieve_hash: 5
+    max_connections_per_file: 8
+    max_mirrors_per_file: 4
     hash_algorithm: sha256
     INSECURE_NOT_FOR_PRODUCTION_ignore_hash: False
 
@@ -131,6 +133,22 @@ retry_backoff:
 max_retries_on_checksum_error:
     This setting controls how many times ``aqt`` will attempt to download a file,
     in the case of a checksum error.
+
+max_connections_per_file:
+    ``aqt`` downloads a large archive over several connections at once, each of
+    which fetches one part of the file after another, when the server hands out
+    parts of a file. This is the largest number of connections for one archive;
+    an archive gets one for every 16 MiB of its size, so most archives are still
+    downloaded over a single connection. Set it to ``1`` to download every
+    archive over a single connection. Default is ``8``.
+
+max_mirrors_per_file:
+    When Qt's server sends a download on to a mirror, it also knows the other
+    mirrors that hold the file. The connections for one large archive are spread
+    over this many of them, the mirror the server chose and the next ones on
+    its list, so no mirror gets them all and a slow or failing one is passed
+    by. The finished archive is checked against the checksum from the
+    ``trusted_mirrors``, as every download is. Default is ``4``.
 
 hash_algorithm:
     This is either ``sha256``, ``sha1`` or ``md5``. ``sha256`` is the only safe 

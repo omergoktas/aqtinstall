@@ -31,20 +31,23 @@ import multiprocessing
 import os
 import platform
 import posixpath
+import queue
 import re
 import secrets
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
+from collections import deque
 from configparser import ConfigParser
 from configparser import Error as ConfigParserError
 from logging import Handler, getLogger
 from logging.handlers import QueueListener
 from pathlib import Path
-from threading import Lock
-from typing import Any, Callable, Dict, Generator, List, Optional, TextIO, Tuple, Union
+from threading import Event, Lock, Thread
+from typing import Any, Callable, Deque, Dict, Generator, List, Optional, Set, TextIO, Tuple, Union
 from urllib.parse import urlparse
 from xml.etree.ElementTree import Element
 
@@ -263,22 +266,204 @@ def downloadBinaryFile(url: str, out: Path, hash_algo: str, exp: Optional[bytes]
                     f"Server response code: {r.status_code}, reason: {r.reason}"
                 )
             hash = hashlib.new(hash_algo, usedforsecurity=False)
-            try:
-                with open(out, "wb") as fd:
-                    for chunk in r.iter_content(chunk_size=8196):
-                        fd.write(chunk)
+            size = int(r.headers.get("Content-Length") or 0)
+            connections = min(Settings.max_connections_per_file, size // BYTES_PER_CONNECTION)
+            if connections > 1 and r.headers.get("Accept-Ranges", "").lower() == "bytes":
+                # Large enough to be worth several connections, and the server hands out ranges of it
+                r.close()
+                mirrors = [r.url]
+                if r.url != url:
+                    # Qt's server sent us to a mirror, so it has a list of the others too
+                    mirrors += _other_mirrors(url, r.url)[: Settings.max_mirrors_per_file - 1]
+                _download_in_ranges(mirrors, out, size, connections, timeout)
+                with open(out, "rb") as fd:
+                    for chunk in iter(lambda: fd.read(1 << 20), b""):
                         hash.update(chunk)
-                    fd.flush()
-            except requests.exceptions.ReadTimeout as e:
-                raise ArchiveConnectionError(f"Read timeout: {e.args}") from e
-            except Exception as e:
-                raise ArchiveDownloadError(f"Download of {filename} has error: {e}") from e
+            else:
+                try:
+                    with open(out, "wb") as fd:
+                        for chunk in r.iter_content(chunk_size=1 << 20):
+                            fd.write(chunk)
+                            hash.update(chunk)
+                        fd.flush()
+                except requests.exceptions.ReadTimeout as e:
+                    raise ArchiveConnectionError(f"Read timeout: {e.args}") from e
+                except Exception as e:
+                    raise ArchiveDownloadError(f"Download of {filename} has error: {e}") from e
             if exp is not None and hash.digest() != exp:
                 raise ArchiveChecksumError(
                     f"Downloaded file {filename} is corrupted! Detect checksum error.\n"
                     f"Expect {exp.hex()}: {url}\n"
                     f"Actual {hash.digest().hex()}: {out.name}"
                 )
+
+
+# A file is downloaded over several connections once it has this many bytes for each of them.
+BYTES_PER_CONNECTION = 16 * 1024 * 1024
+# What one connection asks a mirror for at a time
+BYTES_PER_RANGE = 4 * 1024 * 1024
+
+
+def _other_mirrors(url: str, chosen: str) -> List[str]:
+    """
+    Returns the mirrors that Qt's server lists for the file at `url`, in its order of preference,
+    without the one it `chosen` and without blacklisted ones. Qt's server answers a request for
+    `url` + ".meta4" with a metalink file, which names every mirror that has the file. Returns an
+    empty list when the server has no such list.
+    """
+    try:
+        m = _get_meta(url)
+        if getattr(m, "status_code", 200) != 200 or not _check_content_type(m.headers.get("content-type", "")):
+            return []
+        listed: Dict[int, str] = {}
+        for f in ElementTree.fromstring(m.text).iter("{urn:ietf:params:xml:ns:metalink}file"):
+            for u in f.iter("{urn:ietf:params:xml:ns:metalink}url"):
+                listed[int(u.attrib["priority"])] = u.text
+    except Exception:
+        return []
+    scheme = urlparse(chosen).scheme
+    return [
+        mirror
+        for mirror in (listed[priority] for priority in sorted(listed))
+        if mirror != chosen
+        and urlparse(mirror).scheme == scheme
+        and not any(mirror.startswith(b) for b in Settings.blacklist)
+    ]
+
+
+def _download_range(
+    session: requests.Session, url: str, first: int, last: int, timeout: Tuple[float, float], is_needless: Callable[[], bool]
+) -> Optional[bytes]:
+    """
+    Asks `url` for the bytes from `first` to `last` of its file and returns them. Gives up and
+    returns None as soon as `is_needless()` says that nobody waits for these bytes any more.
+    """
+    headers = {"Range": f"bytes={first}-{last}", "Accept-Encoding": "identity"}
+    with session.get(url, headers=headers, stream=True, timeout=timeout) as r:
+        if r.status_code != 206:
+            raise ArchiveConnectionError(f"{urlparse(url).hostname} answered a request for a range with {r.status_code}")
+        chunks = []
+        received = 0
+        # Small chunks, so that a slow connection notices soon that it may stop
+        for chunk in r.iter_content(chunk_size=1 << 16):
+            if is_needless():
+                return None
+            chunks.append(chunk)
+            received += len(chunk)
+        if received != last - first + 1:
+            raise ArchiveConnectionError(f"{urlparse(url).hostname} sent {received} of {last - first + 1} bytes")
+        return b"".join(chunks)
+
+
+def _download_in_ranges(mirrors: List[str], out: Path, size: int, connections: int, timeout: Tuple[float, float]) -> None:
+    """
+    Downloads a file of `size` bytes into `out` over several connections at once.
+
+    The file is cut into ranges. Each connection takes the next range that nobody has started, asks
+    its mirror for those bytes and hands them over to be written at their place in `out`; so a fast
+    connection fetches more of the file than a slow one. The connections take the `mirrors` in turn.
+
+    Once every range is started, a connection with nothing left to do takes the range that has been
+    under way for the longest, beside the connection that has it, and the first to deliver it wins.
+    The download ends when the last range is written, without waiting for a connection that is
+    still busy: such a one only holds a network connection, and ends by itself. So a slow or
+    stalled mirror cannot hold up the end of the download.
+
+    A mirror that fails is used no more: the connection asks the next mirror for the same range.
+    When no mirror is left, the download fails with ArchiveConnectionError.
+
+    The caller checks the finished file against its checksum, as for any download.
+    """
+    logger = getLogger("aqt.helper")
+    Range = Tuple[int, int]
+    waiting: Deque[Range] = deque(
+        (first, min(first + BYTES_PER_RANGE, size) - 1) for first in range(0, size, BYTES_PER_RANGE)
+    )
+    total = len(waiting)
+    started: Dict[Range, float] = {}
+    shared: Set[Range] = set()
+    fetched: Set[Range] = set()
+    failed: Set[str] = set()
+    lock = Lock()
+    finished = Event()
+    # What the connections hand over: a range with its bytes, an error, or None when a connection ends
+    handed_over: "queue.Queue[Union[Tuple[Range, bytes], BaseException, None]]" = queue.Queue()
+
+    def next_range() -> Optional[Range]:
+        with lock:
+            if waiting:
+                taken = waiting.popleft()
+                started[taken] = time.monotonic()
+                return taken
+            slow = [under_way for under_way in started if under_way not in fetched and under_way not in shared]
+            if not slow:
+                return None
+            taken = min(slow, key=lambda under_way: started[under_way])
+            shared.add(taken)
+            return taken
+
+    def fetch(session: requests.Session, number: int, taken: Range) -> Optional[bytes]:
+        def is_needless() -> bool:
+            return finished.is_set() or taken in fetched
+
+        turn = number % len(mirrors)
+        for mirror in mirrors[turn:] + mirrors[:turn]:
+            if mirror in failed:
+                continue
+            try:
+                return _download_range(session, mirror, taken[0], taken[1], timeout, is_needless)
+            except (requests.exceptions.RequestException, ArchiveConnectionError) as e:
+                if is_needless():
+                    return None
+                failed.add(mirror)
+                logger.debug(f"Mirror {urlparse(mirror).hostname} is used no more for {out.name}: {e}")
+        hostnames = [urlparse(mirror).hostname for mirror in mirrors]
+        raise ArchiveConnectionError(f"Failed to download {out.name}: none of the mirrors delivered it: {hostnames}")
+
+    def connection(number: int) -> None:
+        try:
+            with requests.Session() as session:
+                while not finished.is_set():
+                    taken = next_range()
+                    if taken is None:
+                        return
+                    data = fetch(session, number, taken)
+                    if data is not None:
+                        with lock:
+                            fetched.add(taken)
+                        handed_over.put((taken, data))
+        except BaseException as e:
+            handed_over.put(e)
+        finally:
+            handed_over.put(None)
+
+    logger.debug(f"Downloading {out.name} over {connections} connections to {[urlparse(m).hostname for m in mirrors]}")
+    # Daemon threads, since the download does not wait for a connection that is still busy at its end
+    for number in range(connections):
+        Thread(target=connection, args=(number,), daemon=True).start()
+    written: Set[Range] = set()
+    errors: List[BaseException] = []
+    busy = connections
+    try:
+        with open(out, "wb") as fd:
+            while len(written) < total and busy > 0:
+                item = handed_over.get()
+                if item is None:
+                    busy -= 1
+                elif isinstance(item, BaseException):
+                    errors.append(item)
+                elif item[0] not in written:
+                    fd.seek(item[0][0])
+                    fd.write(item[1])
+                    written.add(item[0])
+    finally:
+        finished.set()
+    if len(written) != total:
+        # A full disk or another error of this machine counts before a mirror's
+        own_errors = [error for error in errors if not isinstance(error, ArchiveConnectionError)]
+        if own_errors or errors:
+            raise (own_errors or errors)[0]
+        raise ArchiveConnectionError(f"Failed to download {out.name}: {total - len(written)} ranges are missing")
 
 
 def retry_on_errors(action: Callable[[], Any], acceptable_errors: Tuple, num_retries: int, name: str) -> Any:
@@ -628,6 +813,14 @@ class SettingsClass:
     @property
     def max_retries_on_checksum_error(self):
         return self.config.getint("requests", "max_retries_on_checksum_error", fallback=int(self.max_retries))
+
+    @property
+    def max_connections_per_file(self):
+        return self.config.getint("requests", "max_connections_per_file", fallback=8)
+
+    @property
+    def max_mirrors_per_file(self):
+        return self.config.getint("requests", "max_mirrors_per_file", fallback=4)
 
     @property
     def max_retries_to_retrieve_hash(self):

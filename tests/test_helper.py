@@ -1,6 +1,8 @@
 import binascii
+import hashlib
 import os
 import re
+import threading
 from pathlib import Path
 from typing import Dict
 from urllib.parse import urlparse
@@ -378,6 +380,135 @@ def test_helper_downloadBinary_error_page(tmp_path, monkeypatch):
         helper.downloadBinaryFile("http://example.com/test.xml", out, "md5", expected, 60)
     assert format(e.value) == "Failed to download test.xml from example.com\nServer response code: 404, reason: Not Found"
     assert not out.exists()
+
+
+class MirrorsWithRanges:
+    """Stands in for Qt's server, which sends a download on to a mirror, and for the mirrors, which
+    hand out any range of bytes of the file. Notes which mirror was asked for which range."""
+
+    QT_URL = "https://download.example.com/qt/archive.7z"
+    MIRRORS = [f"https://mirror{number}.example.com/qt/archive.7z" for number in (1, 2, 3)]
+    METALINK = """<?xml version="1.0" encoding="UTF-8"?>
+<metalink xmlns="urn:ietf:params:xml:ns:metalink">
+  <publisher><url>https://download.example.com</url></publisher>
+  <file name="archive.7z">
+    <url location="de" priority="2">{1}</url>
+    <url location="fi" priority="1">{0}</url>
+    <url location="us" priority="3">{2}</url>
+    <url location="cn" priority="4">http://mirrors.tuna.tsinghua.edu.cn/qt/archive.7z</url>
+  </file>
+</metalink>""".format(*MIRRORS)
+
+    def __init__(self, monkeypatch, content: bytes, broken_mirrors=(), accept_ranges="bytes", answer_once_asked_by=0):
+        self.content = content
+        self.broken_mirrors = broken_mirrors
+        self.accept_ranges = accept_ranges
+        self.asked = []
+        # No range is answered before this many connections have asked for one, so that a test
+        # can count on all of them taking part, however fast the first one is
+        self.connections = set()
+        self.connection_arrived = threading.Condition()
+        mirrors = self
+
+        class Answer:
+            def __init__(self, url: str, status_code: int, headers: Dict[str, str], body: bytes = b""):
+                self.url, self.status_code, self.headers, self.body = url, status_code, headers, body
+                self.reason = "a reason"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def close(self):
+                pass
+
+            def iter_content(self, chunk_size):
+                for start in range(0, len(self.body), chunk_size):
+                    yield self.body[start : start + chunk_size]
+
+        def mock_get(session, url, **kwargs):
+            wanted = kwargs.get("headers", {}).get("Range")
+            if url == mirrors.QT_URL:
+                return Answer(url, 302, {"Location": mirrors.MIRRORS[0]})
+            if wanted is None:
+                headers = {"Content-Length": str(len(mirrors.content)), "Accept-Ranges": mirrors.accept_ranges}
+                return Answer(url, 200, headers, mirrors.content)
+            first, last = (int(number) for number in wanted[len("bytes=") :].split("-"))
+            mirrors.asked.append((url, first, last))
+            with mirrors.connection_arrived:
+                mirrors.connections.add(threading.get_ident())
+                mirrors.connection_arrived.notify_all()
+                mirrors.connection_arrived.wait_for(lambda: len(mirrors.connections) >= answer_once_asked_by, timeout=5)
+            if url in mirrors.broken_mirrors:
+                return Answer(url, 503, {})
+            return Answer(url, 206, {}, mirrors.content[first : last + 1])
+
+        class Metalink:
+            status_code = 200
+            headers = {"content-type": "application/metalink4+xml; charset=utf-8"}
+            text = mirrors.METALINK
+
+        monkeypatch.setattr(requests.Session, "get", mock_get)
+        monkeypatch.setattr(helper, "_get_meta", lambda url: Metalink())
+        # A file of some thousand bytes then counts as a large one
+        monkeypatch.setattr(helper, "BYTES_PER_CONNECTION", 1000)
+        monkeypatch.setattr(helper, "BYTES_PER_RANGE", 300)
+
+
+def test_helper_downloadBinary_in_ranges_over_mirrors(tmp_path, monkeypatch):
+    content = os.urandom(10_000)
+    mirrors = MirrorsWithRanges(monkeypatch, content, answer_once_asked_by=8)
+    out = tmp_path / "archive.7z"
+    helper.downloadBinaryFile(mirrors.QT_URL, out, "sha256", hashlib.sha256(content).digest(), (5, 5))
+    assert out.read_bytes() == content
+    # Every byte was asked for, in ranges of the set size
+    assert {(first, last) for _, first, last in mirrors.asked} == {
+        (first, min(first + 300, 10_000) - 1) for first in range(0, 10_000, 300)
+    }
+    # The eight connections took the three mirrors in turn, and none the blacklisted one
+    assert {url for url, _, _ in mirrors.asked} == set(mirrors.MIRRORS)
+
+
+def test_helper_downloadBinary_in_ranges_passes_a_broken_mirror_by(tmp_path, monkeypatch):
+    content = os.urandom(10_000)
+    mirrors = MirrorsWithRanges(monkeypatch, content, broken_mirrors=MirrorsWithRanges.MIRRORS[1:2])
+    out = tmp_path / "archive.7z"
+    helper.downloadBinaryFile(mirrors.QT_URL, out, "sha256", hashlib.sha256(content).digest(), (5, 5))
+    assert out.read_bytes() == content
+
+
+def test_helper_downloadBinary_in_ranges_fails_when_no_mirror_delivers(tmp_path, monkeypatch):
+    content = os.urandom(10_000)
+    mirrors = MirrorsWithRanges(monkeypatch, content, broken_mirrors=MirrorsWithRanges.MIRRORS)
+    with pytest.raises(ArchiveConnectionError) as e:
+        helper.downloadBinaryFile(
+            mirrors.QT_URL, tmp_path / "archive.7z", "sha256", hashlib.sha256(content).digest(), (5, 5)
+        )
+    assert "none of the mirrors delivered it" in format(e.value)
+
+
+def test_helper_downloadBinary_in_ranges_checks_the_checksum(tmp_path, monkeypatch):
+    content = os.urandom(10_000)
+    mirrors = MirrorsWithRanges(monkeypatch, content)
+    with pytest.raises(ArchiveChecksumError):
+        helper.downloadBinaryFile(mirrors.QT_URL, tmp_path / "archive.7z", "sha256", bytes(32), (5, 5))
+
+
+@pytest.mark.parametrize(
+    "size, accept_ranges, connections",
+    [(10_000, "none", 8), (10_000, "bytes", 1), (1_500, "bytes", 8)],
+    ids=["a server without ranges", "one connection allowed", "a small file"],
+)
+def test_helper_downloadBinary_in_one_piece(tmp_path, monkeypatch, size, accept_ranges, connections):
+    content = os.urandom(size)
+    mirrors = MirrorsWithRanges(monkeypatch, content, accept_ranges=accept_ranges)
+    monkeypatch.setattr(helper.SettingsClass, "max_connections_per_file", connections)
+    out = tmp_path / "archive.7z"
+    helper.downloadBinaryFile(mirrors.QT_URL, out, "sha256", hashlib.sha256(content).digest(), (5, 5))
+    assert out.read_bytes() == content
+    assert mirrors.asked == []
 
 
 def test_helper_downloadBinary_response_error_undefined(tmp_path, monkeypatch):

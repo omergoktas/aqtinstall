@@ -27,6 +27,7 @@ Fixed
 
 Added
 -----
+- Download large archives over several connections and mirrors at once
 - ``AQT_LOG_FILE`` environment variable to move or turn off ``aqtinstall.log``
 - Release binaries for windows-arm64, macos15-arm64 (#931)
 - log commands of safely_run and safely_run_save_output (#1026)
