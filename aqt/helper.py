@@ -22,6 +22,7 @@
 # COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
 # IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+import atexit
 import binascii
 import hashlib
 import logging.config
@@ -33,6 +34,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import tempfile
 import uuid
 from configparser import ConfigParser
 from logging import Handler, getLogger
@@ -164,16 +166,6 @@ def get_default_local_cache_path() -> Path:
     if os_name == "mac":
         return Path.home() / "Library" / "Application Support" / "aqt" / "cache"
     return Path.home() / ".local" / "share" / "aqt" / "cache"
-
-
-def get_default_local_temp_path() -> Path:
-    os_name = get_os_name()
-    if os_name == "windows":
-        appdata = os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming"))
-        return Path(appdata) / "aqt" / "tmp"
-    if os_name == "mac":
-        return Path.home() / "Library" / "Application Support" / "aqt" / "tmp"
-    return Path.home() / ".local" / "share" / "aqt" / "tmp"
 
 
 def _get_meta(url: str) -> requests.Response:
@@ -502,6 +494,7 @@ class SettingsClass:
         "configfile": None,
         "loggingconf": None,
         "_ignore_hash_override": None,
+        "_temp_dir": None,
         "_lock": Lock(),
     }
 
@@ -566,12 +559,20 @@ class SettingsClass:
 
     @property
     def qt_installer_temp_path(self) -> str:
-        """Path of the folder the official Qt installer is downloaded into."""
-        config = self._get_config()
-        # If no temp_dir or blank, return default without modifying config
-        if not config.has_option("qtofficial", "temp_dir") or config.get("qtofficial", "temp_dir").strip() == "":
-            return str(get_default_local_temp_path())
-        return config.get("qtofficial", "temp_dir")
+        """
+        Path of the folder the official Qt installer is downloaded into and started from.
+
+        It is the `temp_dir` of the settings. When that is blank, it is a folder of this run's own
+        in the system's temporary folder, which only this user can read, made when first asked for
+        and removed when the program ends.
+        """
+        configured = self._get_config().get("qtofficial", "temp_dir", fallback="").strip()
+        if configured:
+            return configured
+        if self._temp_dir is None:
+            self._temp_dir = tempfile.mkdtemp(prefix="aqt-")
+            atexit.register(shutil.rmtree, self._temp_dir, ignore_errors=True)
+        return self._temp_dir
 
     @property
     def archive_download_location(self):
@@ -719,10 +720,11 @@ class SettingsClass:
 
     def qt_installer_cleanup(self) -> None:
         """Clean tmp folder. Only the official installer commands create it."""
-        temp_path = Path(self.qt_installer_temp_path)
-        if not temp_path.is_dir():
+        configured = self._get_config().get("qtofficial", "temp_dir", fallback="").strip()
+        temp_dir = configured or self._temp_dir
+        if not temp_dir or not Path(temp_dir).is_dir():
             return
-        for item in temp_path.iterdir():
+        for item in Path(temp_dir).iterdir():
             if item.is_dir():
                 shutil.rmtree(item)
             else:

@@ -1,6 +1,7 @@
 import binascii
 import os
 import re
+from pathlib import Path
 from typing import Dict
 from urllib.parse import urlparse
 
@@ -204,13 +205,34 @@ def test_setup_logging_writes_no_log_file_when_asked(monkeypatch, tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
-def test_settings_do_not_touch_the_official_installer_temp_folder(monkeypatch, tmp_path):
-    temp_path = tmp_path / "aqt" / "tmp"
-    monkeypatch.setattr(helper, "get_default_local_temp_path", lambda: temp_path)
+def test_official_installer_temp_folder_is_made_only_when_asked_for(monkeypatch, tmp_path):
+    monkeypatch.setattr(helper.tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(helper.Settings, "_temp_dir", None)
     helper.Settings.load_settings()
+    helper.Settings.qt_installer_cleanup()
+    assert list(tmp_path.iterdir()) == []
+
+    temp_path = Path(helper.Settings.qt_installer_temp_path)
+    assert temp_path.parent == tmp_path and temp_path.name.startswith("aqt-")
+    assert helper.Settings.qt_installer_temp_path == str(temp_path)
+    (temp_path / "installer.run").write_text("an installer")
+    helper.Settings.qt_installer_cleanup()
+    assert temp_path.is_dir() and list(temp_path.iterdir()) == []
+
+
+@pytest.mark.load_default_settings(False)
+def test_official_installer_temp_folder_from_the_settings(monkeypatch, tmp_path):
+    temp_path = tmp_path / "of my own"
+    temp_path.mkdir()
+    (temp_path / "installer.run").write_text("an installer")
+    monkeypatch.setattr(helper.tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(helper.Settings, "_temp_dir", None)
+    monkeypatch.setattr(helper.Settings, "config", helper.MyConfigParser())
+    helper.Settings.config.read_dict({"qtofficial": {"temp_dir": str(temp_path)}})
     assert helper.Settings.qt_installer_temp_path == str(temp_path)
     helper.Settings.qt_installer_cleanup()
-    assert not temp_path.exists()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["of my own"]
+    assert list(temp_path.iterdir()) == []
 
 
 def mocked_iter_content(chunk_size):
