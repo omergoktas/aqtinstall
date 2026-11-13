@@ -519,16 +519,6 @@ class SettingsClass:
                     self.loggingconf = os.path.join(os.path.dirname(__file__), "logging.ini")
                     self.config.read(self.configfile)
 
-                    logging.info(f"Cache folder: {self.qt_installer_cache_path}")
-                    logging.info(f"Temp folder: {self.qt_installer_temp_path}")
-
-                    temp_dir = self.qt_installer_temp_path
-                    temp_path = Path(temp_dir)
-                    if not temp_path.exists():
-                        temp_path.mkdir(parents=True, exist_ok=True)
-                    else:
-                        self.qt_installer_cleanup()
-
     def _get_config(self) -> ConfigParser:
         """Safe getter for config that ensures it's initialized."""
         self._initialize()
@@ -569,12 +559,12 @@ class SettingsClass:
 
     @property
     def qt_installer_temp_path(self) -> str:
-        """Path for Qt installer cache."""
+        """Path of the folder the official Qt installer is downloaded into."""
         config = self._get_config()
-        # If no cache_path or blank, return default without modifying config
-        if not config.has_option("qtofficial", "temp_path") or config.get("qtofficial", "temp_path").strip() == "":
+        # If no temp_dir or blank, return default without modifying config
+        if not config.has_option("qtofficial", "temp_dir") or config.get("qtofficial", "temp_dir").strip() == "":
             return str(get_default_local_temp_path())
-        return config.get("qtofficial", "temp_path")
+        return config.get("qtofficial", "temp_dir")
 
     @property
     def archive_download_location(self):
@@ -721,8 +711,11 @@ class SettingsClass:
         return self._get_config().getboolean("qtofficial", "unattended", fallback=True)
 
     def qt_installer_cleanup(self) -> None:
-        """Clean tmp folder."""
-        for item in Path(self.qt_installer_temp_path).iterdir():
+        """Clean tmp folder. Only the official installer commands create it."""
+        temp_path = Path(self.qt_installer_temp_path)
+        if not temp_path.is_dir():
+            return
+        for item in temp_path.iterdir():
             if item.is_dir():
                 shutil.rmtree(item)
             else:
