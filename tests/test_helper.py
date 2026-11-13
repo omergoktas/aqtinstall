@@ -285,6 +285,25 @@ def test_helper_downloadBinary_wrong_checksum(tmp_path, monkeypatch):
     assert format(e.value) == expected_err
 
 
+def test_helper_downloadBinary_error_page(tmp_path, monkeypatch):
+    def mock_requests_get(self, url, *args, **kwargs):
+        response = Response()
+        response.status_code = 404
+        response.reason = "Not Found"
+        response.url = url
+        response.iter_content = mocked_iter_content
+        return response
+
+    monkeypatch.setattr(requests.Session, "get", mock_requests_get)
+
+    expected = binascii.unhexlify("1d41a93e4a585bb01e4518d4af431933")
+    out = tmp_path.joinpath("text.xml")
+    with pytest.raises(ArchiveConnectionError) as e:
+        helper.downloadBinaryFile("http://example.com/test.xml", out, "md5", expected, 60)
+    assert format(e.value) == "Failed to download test.xml from example.com\nServer response code: 404, reason: Not Found"
+    assert not out.exists()
+
+
 def test_helper_downloadBinary_response_error_undefined(tmp_path, monkeypatch):
     contained_error_msg = "This chunk of downloaded content contains an error."
 

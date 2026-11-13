@@ -260,6 +260,13 @@ def downloadBinaryFile(url: str, out: Path, hash_algo: str, exp: Optional[bytes]
         except requests.exceptions.Timeout as e:
             raise ArchiveConnectionError(f"Connection timeout: {e.args}") from e
         else:
+            if r.status_code != 200:
+                # An error page is no archive: saving it would only fail the checksum later.
+                # The server did not deliver, so the caller may try another one.
+                raise ArchiveConnectionError(
+                    f"Failed to download {filename} from {urlparse(r.url).hostname}\n"
+                    f"Server response code: {r.status_code}, reason: {r.reason}"
+                )
             hash = hashlib.new(hash_algo, usedforsecurity=False)
             try:
                 with open(out, "wb") as fd:
