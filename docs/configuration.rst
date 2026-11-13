@@ -207,4 +207,6 @@ log, ``aqtinstall.log``, into the folder it is started in.
     to replace the whole logging setup, such as the level of each logger or the
     format of a message. The file follows the format of Python's
     ``logging.config.fileConfig()``; the default one is ``aqt/logging.ini``.
-    ``AQT_LOG_FILE`` applies to the handler named ``file`` of that file too.
+    ``AQT_LOG_FILE`` applies to the handler named ``file`` of that file too: it
+    replaces the path of its log file and keeps its other arguments. A file
+    without a handler of that name is used as it is, with a warning.

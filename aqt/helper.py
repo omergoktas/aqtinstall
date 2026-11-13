@@ -22,10 +22,12 @@
 # COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
 # IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+import ast
 import atexit
 import binascii
 import hashlib
 import logging.config
+import multiprocessing
 import os
 import platform
 import posixpath
@@ -37,6 +39,7 @@ import sys
 import tempfile
 import uuid
 from configparser import ConfigParser
+from configparser import Error as ConfigParserError
 from logging import Handler, getLogger
 from logging.handlers import QueueListener
 from pathlib import Path
@@ -732,21 +735,29 @@ class SettingsClass:
 Settings = SettingsClass()
 
 
-def _logging_config(log_file: Optional[str]) -> ConfigParser:
+def _logging_config(log_file: str) -> Optional[ConfigParser]:
     """
-    Reads the logging configuration, and applies `log_file` to its handler named `file`.
+    Returns the logging configuration with `log_file` applied to its handler named `file`.
 
-    :param log_file: None keeps the handler as the configuration has it, an empty string
-                     removes the handler, so that no log file is written, and any other
-                     value is the path of the log file.
+    An empty `log_file` removes the handler, so that no log file is written. Any other value
+    takes the place of the log file's path and leaves the handler's other arguments as they are.
+    Returns None when the configuration has no such handler, or cannot be read.
     """
     config = ConfigParser()
-    config.read(Settings.loggingconf)
-    if log_file is None or not config.has_section("handler_file"):
-        return config
+    try:
+        config.read(Settings.loggingconf)
+    except ConfigParserError:
+        return None
+    if not config.has_section("handler_file"):
+        return None
     if log_file:
-        # The value is a Python expression, and ConfigParser reads '%' as an interpolation.
-        config.set("handler_file", "args", repr((log_file, "a")).replace("%", "%%"))
+        # The handler's arguments are a Python tuple that starts with the path.
+        try:
+            arguments = tuple(ast.literal_eval(config.get("handler_file", "args", fallback="()")))
+        except (ValueError, SyntaxError, TypeError, ConfigParserError):
+            arguments = ()
+        # ConfigParser reads '%' as the start of an interpolation, so each one is doubled.
+        config.set("handler_file", "args", repr((log_file, *arguments[1:])).replace("%", "%%"))
         return config
     config.remove_section("handler_file")
     # The handler is named in the list of all handlers and in each logger that uses it.
@@ -763,7 +774,20 @@ def setup_logging(env_key="LOG_CFG", log_file_env_key="AQT_LOG_FILE"):
     config = os.getenv(env_key, None)
     if config is not None and os.path.exists(config):
         Settings.loggingconf = config
-    logging.config.fileConfig(_logging_config(os.getenv(log_file_env_key, None)))
+    log_file = os.getenv(log_file_env_key, None)
+    changed_config = None if log_file is None else _logging_config(log_file)
+    if changed_config is None:
+        logging.config.fileConfig(Settings.loggingconf)
+        # Said once, by the program itself and not by each of its download workers
+        if log_file and multiprocessing.parent_process() is None:
+            getLogger("aqt.helper").warning(
+                f"{log_file_env_key} is ignored: the logging configuration {Settings.loggingconf} "
+                "has no handler named 'file'."
+            )
+        return
+    if log_file:
+        os.makedirs(os.path.dirname(os.path.abspath(log_file)), exist_ok=True)
+    logging.config.fileConfig(changed_config)
 
 
 def safely_run(cmd: List[str], timeout: int) -> Any:

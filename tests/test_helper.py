@@ -174,11 +174,12 @@ def test_settings(tmp_path):
     assert "http://mirror.example.com" in helper.Settings.blacklist
 
 
-def test_logging_config_keeps_the_log_file_by_default():
-    config = helper._logging_config(None)
-    assert config.get("handler_file", "args") == "('aqtinstall.log', 'a')"
-    assert config.get("handlers", "keys") == "console,file"
-    assert config.get("logger_aqt", "handlers") == "console,file"
+def test_setup_logging_reads_the_configuration_as_ever_by_default(monkeypatch):
+    configured_with = []
+    monkeypatch.delenv("AQT_LOG_FILE", raising=False)
+    monkeypatch.setattr(helper.logging.config, "fileConfig", configured_with.append)
+    helper.setup_logging()
+    assert configured_with == [helper.Settings.loggingconf]
 
 
 @pytest.mark.parametrize("log_file", ["logs/aqt.log", r"C:\Users\me\aqt 100%.log", "it's.log"])
@@ -189,6 +190,31 @@ def test_logging_config_names_the_log_file(log_file):
     assert config.get("logger_aqt", "handlers") == "console,file"
 
 
+def custom_logging_config(tmp_path, monkeypatch, handler_file: str) -> None:
+    """Makes a logging configuration of the user's own the one in use, as LOG_CFG does"""
+    with open(helper.Settings.loggingconf, "r") as f:
+        default_config = f.read()
+    default_handler = (
+        "[handler_file]\nlevel=DEBUG\nclass=logging.FileHandler\nformatter=verbose\nargs=('aqtinstall.log', 'a')\n"
+    )
+    assert default_handler in default_config
+    custom_config = tmp_path / "logging.ini"
+    custom_config.write_text(default_config.replace(default_handler, handler_file))
+    monkeypatch.setattr(helper.Settings, "loggingconf", str(custom_config))
+
+
+def test_logging_config_keeps_the_other_arguments_of_the_log_file(monkeypatch, tmp_path):
+    custom_logging_config(
+        tmp_path,
+        monkeypatch,
+        "[handler_file]\nlevel=INFO\nclass=logging.FileHandler\nformatter=brief\nargs=('mine.log', 'w', 'utf-8')\n",
+    )
+    config = helper._logging_config("logs/aqt.log")
+    assert eval(config.get("handler_file", "args")) == ("logs/aqt.log", "w", "utf-8")
+    assert config.get("handler_file", "level") == "INFO"
+    assert config.get("handler_file", "formatter") == "brief"
+
+
 def test_logging_config_without_a_log_file():
     config = helper._logging_config("")
     assert not config.has_section("handler_file")
@@ -197,12 +223,35 @@ def test_logging_config_without_a_log_file():
     assert config.get("logger_root", "handlers") == "console"
 
 
+@pytest.mark.parametrize("log_file", ["", "logs/aqt.log"])
+def test_logging_config_leaves_a_configuration_without_the_handler_alone(monkeypatch, tmp_path, log_file):
+    with open(helper.Settings.loggingconf, "r") as f:
+        default_config = f.read()
+    custom_config = tmp_path / "logging.ini"
+    custom_config.write_text(default_config.replace("handler_file", "handler_mine").replace(",file", ",mine"))
+    monkeypatch.setattr(helper.Settings, "loggingconf", str(custom_config))
+    assert helper._logging_config(log_file) is None
+
+
 def test_setup_logging_writes_no_log_file_when_asked(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("AQT_LOG_FILE", "")
     helper.setup_logging()
     helper.getLogger("aqt.main").info("a line for every handler")
     assert list(tmp_path.iterdir()) == []
+
+
+def test_setup_logging_writes_the_log_file_where_asked(monkeypatch, tmp_path):
+    log_file = tmp_path / "a new folder" / "aqt.log"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AQT_LOG_FILE", str(log_file))
+    helper.setup_logging()
+    helper.getLogger("aqt.main").info("a line for every handler")
+    # Configure again without a log file, which closes the one above
+    monkeypatch.setenv("AQT_LOG_FILE", "")
+    helper.setup_logging()
+    assert "a line for every handler" in log_file.read_text()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["a new folder"]
 
 
 def test_official_installer_temp_folder_is_made_only_when_asked_for(monkeypatch, tmp_path):
