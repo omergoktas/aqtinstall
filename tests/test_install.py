@@ -2074,3 +2074,66 @@ def test_install_installer_unrecognized_archive_format(monkeypatch):
             keep=False,
         )
     assert "unrecognized archive format" in format(err.value)
+
+
+@pytest.mark.parametrize(
+    "content, looks_like_zip, command, expected_route",
+    (
+        # zipfile.is_zipfile() takes some 7z archives for zip files on CPython before 3.14 (#1042)
+        (SEVENZIP_SIGNATURE + b"\x00" * 20, True, None, "py7zr"),
+        (SEVENZIP_SIGNATURE + b"\x00" * 20, True, "7z", "external"),
+        (b"a zip archive", True, "7z", "zip"),
+        # The external tool gets what is not recognized here
+        (b"some other format", False, "7z", "external"),
+    ),
+)
+def test_install_installer_archive_route(monkeypatch, content, looks_like_zip, command, expected_route):
+    routes = []
+
+    def archive_class(route):
+        class Archive:
+            def __init__(self, *args, **kwargs):
+                routes.append(route)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def extractall(self, path):
+                pass
+
+        return Archive
+
+    def mock_external_extractor(*args, **kwargs):
+        routes.append("external")
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("aqt.installer.get_hash", lambda *args, **kwargs: "")
+    monkeypatch.setattr("aqt.installer.downloadBinaryFile", lambda *args: None)
+    monkeypatch.setattr("aqt.installer.zipfile.is_zipfile", lambda path: looks_like_zip)
+    monkeypatch.setattr("aqt.installer.zipfile.ZipFile", archive_class("zip"))
+    monkeypatch.setattr("aqt.installer.py7zr.SevenZipFile", archive_class("py7zr"))
+    monkeypatch.setattr("aqt.installer.subprocess.run", mock_external_extractor)
+
+    with TemporaryDirectory() as temp_dir:
+        (Path(temp_dir) / "archive").write_bytes(content)
+        installer(
+            qt_package=QtPackage(
+                "name",
+                "base_url",
+                "archive_path",
+                "archive",
+                "archive_install_path",
+                "package_desc",
+                "pkg_update_name",
+            ),
+            base_dir=temp_dir,
+            command=command,
+            queue=MockMultiprocessingManager.Queue(),
+            archive_dest=Path(temp_dir),
+            settings_ini=Settings.configfile,
+            keep=False,
+        )
+    assert routes == [expected_route]

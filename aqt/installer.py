@@ -1713,6 +1713,7 @@ def installer(
     )
     gc.collect()
 
+    is_7z = _is_7zfile(archive)
     if tarfile.is_tarfile(archive):
         with tarfile.open(archive) as tar_archive:
             if hasattr(tarfile, "data_filter"):
@@ -1721,21 +1722,21 @@ def installer(
                 # remove this when the minimum Python version is 3.12
                 logger.warning("Extracting may be unsafe; consider updating Python to 3.11.4 or greater")
                 tar_archive.extractall(path=base_dir)
-    elif _is_7zfile(archive):
-        if command is None:
-            with py7zr.SevenZipFile(archive, "r") as szf:
-                szf.extractall(path=base_dir)
-        else:
-            command_args = [command, "x", "-aoa", "-bd", "-y", "-o{}".format(base_dir), str(archive)]
-            try:
-                proc = subprocess.run(command_args, capture_output=True, check=True, text=True)
-                logger.debug(proc.stdout)
-            except subprocess.CalledProcessError as cpe:
-                msg = "\n".join(filter(None, [f"Extraction error: {cpe.returncode}", cpe.stdout, cpe.stderr]))
-                raise ArchiveExtractionError(msg) from cpe
-    elif zipfile.is_zipfile(archive):
+    elif is_7z and command is None:
+        with py7zr.SevenZipFile(archive, "r") as szf:
+            szf.extractall(path=base_dir)
+    elif not is_7z and zipfile.is_zipfile(archive):
         with zipfile.ZipFile(archive) as zip_archive:
             zip_archive.extractall(path=base_dir)
+    elif command is not None:
+        # A 7z archive, or a format not recognized here, which the external tool may still know
+        command_args = [command, "x", "-aoa", "-bd", "-y", "-o{}".format(base_dir), str(archive)]
+        try:
+            proc = subprocess.run(command_args, capture_output=True, check=True, text=True)
+            logger.debug(proc.stdout)
+        except subprocess.CalledProcessError as cpe:
+            msg = "\n".join(filter(None, [f"Extraction error: {cpe.returncode}", cpe.stdout, cpe.stderr]))
+            raise ArchiveExtractionError(msg) from cpe
     else:
         raise ArchiveExtractionError(
             f"Unable to extract '{archive.name}': unrecognized archive format (expected tar, 7z or zip)"
