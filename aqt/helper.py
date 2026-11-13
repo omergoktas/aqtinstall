@@ -505,6 +505,7 @@ class SettingsClass:
         self.config: Optional[ConfigParser]
         self._lock: Lock
         self._ignore_hash_override: Optional[bool] = None
+        self._temp_dir: Optional[str]
         self._initialize()
 
     def __new__(cls, *p, **k):
