@@ -376,15 +376,17 @@ class CommercialInstaller:
 
             if not self.dry_run:
                 self.logger.info(f"Running: {redact_credentials(cmd)}")
-                safely_run(cmd, Settings.qt_installer_timeout)
+                result = safely_run(cmd, Settings.qt_installer_timeout)
+                # subprocess.run does not raise on a non-zero exit code
+                if result.returncode != 0:
+                    raise RuntimeError(f"The official Qt installer ended with exit code {result.returncode}")
+                self.logger.info("Qt installation completed successfully")
             else:
                 self.logger.info(f"Would run: {redact_credentials(cmd)}")
 
         except Exception as e:
             self.logger.error(f"Installation failed: {str(e)}")
             raise
-        finally:
-            self.logger.info("Qt installation completed successfully")
 
     def _get_package_name(self) -> str:
         qt_version = f"{self.version.major}{self.version.minor}{self.version.patch}"

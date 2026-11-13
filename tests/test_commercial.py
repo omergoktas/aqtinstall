@@ -390,10 +390,16 @@ def test_list_qt_commercial_errors(capsys, args, expected_error):
 def test_install_qt_commercial_failure_exit_code(monkeypatch, tmp_path):
     """A failed official installation must exit non-zero, not report success."""
 
+    install_calls = []
+
     def mock_install(*args, **kwargs):
+        install_calls.append(args)
         raise RuntimeError("Failed to find package information in installer output")
 
     monkeypatch.setattr(CommercialInstaller, "install", mock_install)
+    # CommercialInstaller() asks Qt's server for the installer's name; without this the test would end
+    # with 1 because the tests block the network, before it ever reached install()
+    monkeypatch.setattr("aqt.commercial.get_qt_installer_name", lambda: "qt-online-installer")
 
     cli = Cli()
     cli._setup_settings()
@@ -410,6 +416,41 @@ def test_install_qt_commercial_failure_exit_code(monkeypatch, tmp_path):
         "secret",
     ]
     assert cli.run(cmd) == 1
+    assert len(install_calls) == 1
+
+
+@pytest.mark.parametrize("installer_exit_code, expected_exit_code", [(0, 0), (1, 1)])
+def test_install_qt_commercial_installer_exit_code(monkeypatch, tmp_path, installer_exit_code, expected_exit_code):
+    """An official installer that ends with a non-zero exit code must make aqt end with one too."""
+    commands = []
+
+    def mock_safely_run(cmd, timeout):
+        commands.append(cmd)
+        return CompletedProcess(args=cmd, returncode=installer_exit_code)
+
+    monkeypatch.setattr("aqt.commercial.get_qt_installer_name", lambda: "qt-online-installer")
+    monkeypatch.setattr("aqt.commercial.get_qt_account_path", lambda: tmp_path / "qtaccount.ini")
+    monkeypatch.setattr("aqt.helper.get_default_local_cache_path", lambda: tmp_path / "cache")
+    monkeypatch.setattr("aqt.commercial.download_installer", lambda *args, **kwargs: None)
+    monkeypatch.setattr("aqt.commercial.prepare_installer", lambda installer_path, os_name: installer_path)
+    monkeypatch.setattr("aqt.commercial.safely_run", mock_safely_run)
+    monkeypatch.setattr(Settings, "_temp_dir", str(tmp_path / "installer"))
+    (tmp_path / "installer").mkdir()
+
+    cli = Cli()
+    cli._setup_settings()
+    cmd = [
+        "install-qt-official",
+        "--override",
+        "install",
+        "qt.qt6.680.gcc_64",
+        "--email",
+        "user@example.com",
+        "--pw",
+        "secret",
+    ]
+    assert cli.run(cmd) == expected_exit_code
+    assert len(commands) == 1 and commands[0][-2:] == ["install", "qt.qt6.680.gcc_64"]
 
 
 def test_list_qt_commercial_failure_exit_code(monkeypatch):

@@ -766,9 +766,10 @@ def setup_logging(env_key="LOG_CFG", log_file_env_key="AQT_LOG_FILE"):
     logging.config.fileConfig(_logging_config(os.getenv(log_file_env_key, None)))
 
 
-def safely_run(cmd: List[str], timeout: int) -> None:
+def safely_run(cmd: List[str], timeout: int) -> Any:
     try:
-        subprocess.run(cmd, shell=False, timeout=timeout)
+        result = subprocess.run(cmd, shell=False, timeout=timeout)
+        return result
     except Exception:
         raise
 
