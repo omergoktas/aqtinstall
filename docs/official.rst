@@ -111,4 +111,4 @@ The file located in ``./aqt/settings.ini`` can be edited in the ``[qtofficial]``
    associate_common_filetypes : Yes
    telemetry : No
    cache_path : # When empty, will use ~/.local/share/aqt/cache or equivalent for your OS
-   temp_dir : # When empty, will use a folder of its own in the system's temporary folder and remove it afterwards; name a folder here if programs may not be started from there
+   temp_dir : # The folder in which each run makes a folder of its own for the installer and removes it afterwards. When empty, the system's temporary folder; name another if programs may not be started from there

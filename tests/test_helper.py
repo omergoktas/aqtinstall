@@ -208,6 +208,9 @@ def test_setup_logging_writes_no_log_file_when_asked(monkeypatch, tmp_path):
 def test_official_installer_temp_folder_is_made_only_when_asked_for(monkeypatch, tmp_path):
     monkeypatch.setattr(helper.tempfile, "tempdir", str(tmp_path))
     monkeypatch.setattr(helper.Settings, "_temp_dir", None)
+    # Load the settings as a new process does
+    monkeypatch.setattr(helper.Settings, "config", None)
+    helper.Settings._initialize()
     helper.Settings.load_settings()
     helper.Settings.qt_installer_cleanup()
     assert list(tmp_path.iterdir()) == []
@@ -222,17 +225,19 @@ def test_official_installer_temp_folder_is_made_only_when_asked_for(monkeypatch,
 
 @pytest.mark.load_default_settings(False)
 def test_official_installer_temp_folder_from_the_settings(monkeypatch, tmp_path):
-    temp_path = tmp_path / "of my own"
-    temp_path.mkdir()
-    (temp_path / "installer.run").write_text("an installer")
-    monkeypatch.setattr(helper.tempfile, "tempdir", str(tmp_path))
+    configured = tmp_path / "of my own"
+    configured.mkdir()
+    (configured / "notes.txt").write_text("the user's own file")
     monkeypatch.setattr(helper.Settings, "_temp_dir", None)
     monkeypatch.setattr(helper.Settings, "config", helper.MyConfigParser())
-    helper.Settings.config.read_dict({"qtofficial": {"temp_dir": str(temp_path)}})
-    assert helper.Settings.qt_installer_temp_path == str(temp_path)
+    helper.Settings.config.read_dict({"qtofficial": {"temp_dir": str(configured)}})
+
+    temp_path = Path(helper.Settings.qt_installer_temp_path)
+    assert temp_path.parent == configured and temp_path.name.startswith("aqt-")
+    (temp_path / "installer.run").write_text("an installer")
     helper.Settings.qt_installer_cleanup()
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["of my own"]
     assert list(temp_path.iterdir()) == []
+    assert (configured / "notes.txt").read_text() == "the user's own file"
 
 
 def mocked_iter_content(chunk_size):

@@ -562,15 +562,15 @@ class SettingsClass:
         """
         Path of the folder the official Qt installer is downloaded into and started from.
 
-        It is the `temp_dir` of the settings. When that is blank, it is a folder of this run's own
-        in the system's temporary folder, which only this user can read, made when first asked for
-        and removed when the program ends.
+        It is a folder of this run's own, which only this user can read, made when first asked for
+        and removed when the program ends. It lies in the `temp_dir` of the settings, or in the
+        system's temporary folder when that is blank, so nothing else in either is ever touched.
         """
-        configured = self._get_config().get("qtofficial", "temp_dir", fallback="").strip()
-        if configured:
-            return configured
         if self._temp_dir is None:
-            self._temp_dir = tempfile.mkdtemp(prefix="aqt-")
+            configured = self._get_config().get("qtofficial", "temp_dir", fallback="").strip()
+            if configured:
+                Path(configured).mkdir(parents=True, exist_ok=True)
+            self._temp_dir = tempfile.mkdtemp(prefix="aqt-", dir=configured or None)
             atexit.register(shutil.rmtree, self._temp_dir, ignore_errors=True)
         return self._temp_dir
 
@@ -719,12 +719,10 @@ class SettingsClass:
         return self._get_config().getboolean("qtofficial", "unattended", fallback=True)
 
     def qt_installer_cleanup(self) -> None:
-        """Clean tmp folder. Only the official installer commands create it."""
-        configured = self._get_config().get("qtofficial", "temp_dir", fallback="").strip()
-        temp_dir = configured or self._temp_dir
-        if not temp_dir or not Path(temp_dir).is_dir():
+        """Empties the official installer's folder, if this run has made one."""
+        if self._temp_dir is None or not Path(self._temp_dir).is_dir():
             return
-        for item in Path(temp_dir).iterdir():
+        for item in Path(self._temp_dir).iterdir():
             if item.is_dir():
                 shutil.rmtree(item)
             else:
