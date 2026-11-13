@@ -1169,6 +1169,8 @@ def test_show_list_bad_connection_for_checksum(monkeypatch, capsys, exception_cl
         "'['https://download.qt.io']\n"
         "==============================Suggested follow-up:==============================\n"
         "* Check your internet connection\n"
+        "* If this Qt version was released very recently, try again later: "
+        "its checksums may not be on Qt's server yet\n"
         "* Consider modifying `requests.max_retries_to_retrieve_hash` in settings.ini\n"
         "* Consider modifying `mirrors.trusted_mirrors` in settings.ini "
         "(see https://aqtinstall.readthedocs.io/en/stable/configuration.html#configuration)\n"

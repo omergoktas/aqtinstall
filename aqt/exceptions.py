@@ -62,6 +62,8 @@ class ChecksumDownloadFailure(ArchiveDownloadError):
         suggested_action.extend(
             [
                 "Check your internet connection",
+                "If this Qt version was released very recently, try again later: "
+                "its checksums may not be on Qt's server yet",
                 "Consider modifying `requests.max_retries_to_retrieve_hash` in settings.ini",
                 f"Consider modifying `mirrors.trusted_mirrors` in settings.ini (see {DOCS_CONFIG})",
             ]
