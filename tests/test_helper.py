@@ -511,6 +511,26 @@ def test_helper_downloadBinary_in_one_piece(tmp_path, monkeypatch, size, accept_
     assert mirrors.asked == []
 
 
+def test_helper_downloadBinary_connection_breaks_in_the_middle(tmp_path, monkeypatch):
+    def iter_broken_content(*args, **kwargs):
+        yield b"the first bytes of the file"
+        raise requests.exceptions.ChunkedEncodingError("Connection broken: BrokenPipeError(32, 'Broken pipe')")
+
+    def mock_requests_get(*args, **kwargs):
+        response = Response()
+        response.status_code = 200
+        response.url = "http://example.com/test.xml"
+        response.iter_content = iter_broken_content
+        return response
+
+    monkeypatch.setattr(requests.Session, "get", mock_requests_get)
+
+    # An error that lets the caller go on with a fallback server, as for one that cannot be reached
+    with pytest.raises(ArchiveConnectionError) as e:
+        helper.downloadBinaryFile("http://example.com/test.xml", tmp_path / "text.xml", "md5", bytes(16), 60)
+    assert format(e.value).startswith("Connection to example.com broke: Connection broken")
+
+
 def test_helper_downloadBinary_response_error_undefined(tmp_path, monkeypatch):
     contained_error_msg = "This chunk of downloaded content contains an error."
 
