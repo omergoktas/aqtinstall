@@ -725,11 +725,38 @@ class SettingsClass:
 Settings = SettingsClass()
 
 
-def setup_logging(env_key="LOG_CFG"):
+def _logging_config(log_file: Optional[str]) -> ConfigParser:
+    """
+    Reads the logging configuration, and applies `log_file` to its handler named `file`.
+
+    :param log_file: None keeps the handler as the configuration has it, an empty string
+                     removes the handler, so that no log file is written, and any other
+                     value is the path of the log file.
+    """
+    config = ConfigParser()
+    config.read(Settings.loggingconf)
+    if log_file is None or not config.has_section("handler_file"):
+        return config
+    if log_file:
+        # The value is a Python expression, and ConfigParser reads '%' as an interpolation.
+        config.set("handler_file", "args", repr((log_file, "a")).replace("%", "%%"))
+        return config
+    config.remove_section("handler_file")
+    # The handler is named in the list of all handlers and in each logger that uses it.
+    handler_lists = [("handlers", "keys")]
+    handler_lists += [(section, "handlers") for section in config.sections() if section.startswith("logger_")]
+    for section, option in handler_lists:
+        if config.has_option(section, option):
+            handlers = [name.strip() for name in config.get(section, option).split(",")]
+            config.set(section, option, ",".join(name for name in handlers if name != "file"))
+    return config
+
+
+def setup_logging(env_key="LOG_CFG", log_file_env_key="AQT_LOG_FILE"):
     config = os.getenv(env_key, None)
     if config is not None and os.path.exists(config):
         Settings.loggingconf = config
-    logging.config.fileConfig(Settings.loggingconf)
+    logging.config.fileConfig(_logging_config(os.getenv(log_file_env_key, None)))
 
 
 def safely_run(cmd: List[str], timeout: int) -> None:

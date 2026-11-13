@@ -186,3 +186,25 @@ fallbacks:
 
     Alternatively, you can set ``AQT_MIRRORS_FALLBACKS`` as an environment
     variable, which will override any value in ``settings.ini``.
+
+
+Logging
+-------
+
+``aqtinstall`` prints its messages to the terminal and also writes a detailed
+log, ``aqtinstall.log``, into the folder it is started in.
+
+``AQT_LOG_FILE``:
+    Set this environment variable to the path of a file to write the log there
+    instead. Set it to an empty value to write no log file at all:
+
+    .. code-block:: console
+
+        $ AQT_LOG_FILE= aqt install-qt linux desktop 6.8.0
+
+``LOG_CFG``:
+    Set this environment variable to the path of a logging configuration file
+    to replace the whole logging setup, such as the level of each logger or the
+    format of a message. The file follows the format of Python's
+    ``logging.config.fileConfig()``; the default one is ``aqt/logging.ini``.
+    ``AQT_LOG_FILE`` applies to the handler named ``file`` of that file too.

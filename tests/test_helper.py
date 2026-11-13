@@ -173,6 +173,46 @@ def test_settings(tmp_path):
     assert "http://mirror.example.com" in helper.Settings.blacklist
 
 
+def test_logging_config_keeps_the_log_file_by_default():
+    config = helper._logging_config(None)
+    assert config.get("handler_file", "args") == "('aqtinstall.log', 'a')"
+    assert config.get("handlers", "keys") == "console,file"
+    assert config.get("logger_aqt", "handlers") == "console,file"
+
+
+@pytest.mark.parametrize("log_file", ["logs/aqt.log", r"C:\Users\me\aqt 100%.log", "it's.log"])
+def test_logging_config_names_the_log_file(log_file):
+    config = helper._logging_config(log_file)
+    # logging.config.fileConfig() evaluates the value as a Python expression
+    assert eval(config.get("handler_file", "args")) == (log_file, "a")
+    assert config.get("logger_aqt", "handlers") == "console,file"
+
+
+def test_logging_config_without_a_log_file():
+    config = helper._logging_config("")
+    assert not config.has_section("handler_file")
+    assert config.get("handlers", "keys") == "console"
+    assert config.get("logger_aqt", "handlers") == "console"
+    assert config.get("logger_root", "handlers") == "console"
+
+
+def test_setup_logging_writes_no_log_file_when_asked(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AQT_LOG_FILE", "")
+    helper.setup_logging()
+    helper.getLogger("aqt.main").info("a line for every handler")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_settings_do_not_touch_the_official_installer_temp_folder(monkeypatch, tmp_path):
+    temp_path = tmp_path / "aqt" / "tmp"
+    monkeypatch.setattr(helper, "get_default_local_temp_path", lambda: temp_path)
+    helper.Settings.load_settings()
+    assert helper.Settings.qt_installer_temp_path == str(temp_path)
+    helper.Settings.qt_installer_cleanup()
+    assert not temp_path.exists()
+
+
 def mocked_iter_content(chunk_size):
     with open(os.path.join(os.path.dirname(__file__), "data", "windows-5150-update.xml"), "rb") as f:
         data = f.read(chunk_size)
