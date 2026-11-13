@@ -437,9 +437,7 @@ def test_list_qt_commercial_nonzero_exit_code(monkeypatch):
     monkeypatch.setattr("aqt.installer.get_qt_installer_name", lambda: "qt-online-installer")
     monkeypatch.setattr("aqt.installer.download_installer", lambda *a, **k: None)
     monkeypatch.setattr("aqt.installer.prepare_installer", lambda *a, **k: "/fake/installer")
-    monkeypatch.setattr(
-        "aqt.installer.safely_run_save_output", lambda *a, **k: FakeCompletedProcess()
-    )
+    monkeypatch.setattr("aqt.installer.safely_run_save_output", lambda *a, **k: FakeCompletedProcess())
 
     cli = Cli()
     cli._setup_settings()

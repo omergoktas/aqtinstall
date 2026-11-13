@@ -1070,8 +1070,7 @@ class Cli:
             # path and the CLI would report success.
             if output.returncode != 0:
                 raise AqtException(
-                    f"Official installer search failed with exit code "
-                    f"{output.returncode}: {output.stderr.strip()}"
+                    f"Official installer search failed with exit code {output.returncode}: {output.stderr.strip()}"
                 )
 
             if output.stdout:
