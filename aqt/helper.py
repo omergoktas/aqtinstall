@@ -177,7 +177,7 @@ def get_default_local_temp_path() -> Path:
 
 
 def _get_meta(url: str) -> requests.Response:
-    return requests.get(url + ".meta4")
+    return requests.get(url + ".meta4", timeout=(Settings.connection_timeout, Settings.response_timeout))
 
 
 def _check_content_type(ct: str) -> bool:
@@ -354,7 +354,7 @@ def altlink(url: str, alt: str) -> str:
         return alt
     try:
         m = _get_meta(url)
-    except requests.exceptions.ConnectionError:
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
         logger.error("Got connection error. Fall back to recovery plan...")
         return alt
     else:
