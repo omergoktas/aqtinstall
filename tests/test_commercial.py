@@ -8,7 +8,7 @@ import pytest
 
 from aqt.commercial import CommercialInstaller, QtPackageInfo, QtPackageManager
 from aqt.exceptions import DiskAccessNotPermitted
-from aqt.helper import Settings, get_qt_account_path, get_qt_installer_name, get_qt_installers
+from aqt.helper import Settings, get_os_name, get_qt_installer_name, get_qt_installers
 from aqt.installer import Cli
 from aqt.metadata import Version
 
@@ -55,15 +55,14 @@ def commercial_installer():
         ),
     ],
 )
-def test_cli_login_qt_commercial(capsys, monkeypatch, cmd, expected_arch, expected_err):
+def test_cli_login_qt_commercial(capsys, monkeypatch, tmp_path, cmd, expected_arch, expected_err):
     """Test commercial Qt installation command"""
-    # Detect current platform
-    current_platform = sys.platform.lower()
-    arch = expected_arch[current_platform]
+    arch = expected_arch[get_os_name()]
     cmd = cmd.format(arch)
 
-    if get_qt_account_path().exists():
-        os.remove(get_qt_account_path())
+    # Stand in for a machine without a Qt account, and leave the user's own account file alone
+    monkeypatch.setattr("aqt.commercial.get_qt_account_path", lambda: tmp_path / "qtaccount.ini")
+    monkeypatch.delenv("QT_INSTALLER_JWT_TOKEN", raising=False)
 
     cli = Cli()
     cli._setup_settings()
@@ -237,6 +236,7 @@ def test_get_install_command(monkeypatch, modules: Optional[List[str]], expected
     assert command == expected_command
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="The expected command lines name the Linux installer")
 @pytest.mark.enable_socket
 @pytest.mark.parametrize(
     "cmd, arch_dict, details, expected_command",
