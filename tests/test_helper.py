@@ -473,7 +473,6 @@ class MirrorsWithRanges:
         monkeypatch.setattr(requests.Session, "get", mock_get)
         monkeypatch.setattr(helper, "_get_meta", lambda url: Metalink())
         # A file of some thousand bytes then counts as a large one
-        monkeypatch.setattr(helper, "BYTES_PER_CONNECTION", 1000)
         monkeypatch.setattr(helper, "BYTES_PER_RANGE", 300)
 
 
@@ -518,7 +517,7 @@ def test_helper_downloadBinary_in_ranges_checks_the_checksum(tmp_path, monkeypat
 
 @pytest.mark.parametrize(
     "size, accept_ranges, connections",
-    [(10_000, "none", 8), (10_000, "bytes", 1), (1_500, "bytes", 8)],
+    [(10_000, "none", 8), (10_000, "bytes", 1), (599, "bytes", 8)],
     ids=["a server without ranges", "one connection allowed", "a small file"],
 )
 def test_helper_downloadBinary_in_one_piece(tmp_path, monkeypatch, size, accept_ranges, connections):

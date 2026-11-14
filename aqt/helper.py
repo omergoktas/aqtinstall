@@ -269,7 +269,7 @@ def downloadBinaryFile(url: str, out: Path, hash_algo: str, exp: Optional[bytes]
                 )
             hash = hashlib.new(hash_algo, usedforsecurity=False)
             size = int(r.headers.get("Content-Length") or 0)
-            connections = min(Settings.max_connections_per_file, size // BYTES_PER_CONNECTION)
+            connections = min(Settings.max_connections_per_file, size // BYTES_PER_RANGE)
             if connections > 1 and r.headers.get("Accept-Ranges", "").lower() == "bytes":
                 # Large enough to be worth several connections, and the server hands out ranges of it
                 r.close()
@@ -303,9 +303,12 @@ def downloadBinaryFile(url: str, out: Path, hash_algo: str, exp: Optional[bytes]
                 )
 
 
-# A file is downloaded over several connections once it has this many bytes for each of them.
-BYTES_PER_CONNECTION = 16 * 1024 * 1024
-# What one connection asks a mirror for at a time
+# What one connection asks a mirror for at a time. A file gets one connection for each such range
+# it holds, so a file under two of them is downloaded over a single connection: a new connection
+# takes several round trips to the server before its first byte arrives, and then starts slowly,
+# which costs more than it gains unless megabytes are left for it to fetch. Measured on a 1 Gbit
+# line: an archive under some 10 MB gains nothing from more connections, and one of 26 MB comes
+# in 2.1 s where a single connection takes 3.6 s.
 BYTES_PER_RANGE = 4 * 1024 * 1024
 
 

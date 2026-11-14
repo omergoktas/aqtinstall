@@ -138,7 +138,7 @@ max_connections_per_file:
     ``aqt`` downloads a large archive over several connections at once, each of
     which fetches one part of the file after another, when the server hands out
     parts of a file. This is the largest number of connections for one archive;
-    an archive gets one for every 16 MiB of its size, so most archives are still
+    an archive gets one for every 4 MiB of its size, so a small archive is still
     downloaded over a single connection. Set it to ``1`` to download every
     archive over a single connection. Default is ``8``.
 
