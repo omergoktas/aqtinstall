@@ -209,22 +209,24 @@ fallbacks:
 Logging
 -------
 
-``aqtinstall`` prints its messages to the terminal and also writes a detailed
-log, ``aqtinstall.log``, into the folder it is started in.
+``aqtinstall`` prints its messages to the terminal, and writes no log file
+unless it is asked to.
 
 ``AQT_LOG_FILE``:
-    Set this environment variable to the path of a file to write the log there
-    instead. Set it to an empty value to write no log file at all:
+    Set this environment variable to the path of a file to have a detailed log
+    written there as well:
 
     .. code-block:: console
 
-        $ AQT_LOG_FILE= aqt install-qt linux desktop 6.8.0
+        $ AQT_LOG_FILE=aqtinstall.log aqt install-qt linux desktop 6.8.0
 
 ``LOG_CFG``:
     Set this environment variable to the path of a logging configuration file
     to replace the whole logging setup, such as the level of each logger or the
     format of a message. The file follows the format of Python's
     ``logging.config.fileConfig()``; the default one is ``aqt/logging.ini``.
-    ``AQT_LOG_FILE`` applies to the handler named ``file`` of that file too: it
-    replaces the path of its log file and keeps its other arguments. A file
-    without a handler of that name is used as it is, with a warning.
+    Such a file is used as it is, a log file it names included. ``AQT_LOG_FILE``
+    applies to its handler named ``file`` too: a path replaces the path of that
+    handler's log file and keeps its other arguments, and an empty value leaves
+    the handler out. A file without a handler of that name is used as it is,
+    with a warning.

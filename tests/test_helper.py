@@ -176,12 +176,25 @@ def test_settings(tmp_path):
     assert "http://mirror.example.com" in helper.Settings.blacklist
 
 
-def test_setup_logging_reads_the_configuration_as_ever_by_default(monkeypatch):
+def test_setup_logging_writes_no_log_file_by_default(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AQT_LOG_FILE", raising=False)
+    monkeypatch.delenv("LOG_CFG", raising=False)
+    helper.setup_logging()
+    helper.getLogger("aqt.main").info("a line for every handler")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_setup_logging_takes_a_configuration_of_ones_own_as_it_is(monkeypatch, tmp_path):
+    custom_config = tmp_path / "logging.ini"
+    custom_config.write_text("a logging configuration of one's own")
     configured_with = []
     monkeypatch.delenv("AQT_LOG_FILE", raising=False)
+    monkeypatch.setenv("LOG_CFG", str(custom_config))
+    monkeypatch.setattr(helper.Settings, "loggingconf", helper.Settings.loggingconf)
     monkeypatch.setattr(helper.logging.config, "fileConfig", configured_with.append)
     helper.setup_logging()
-    assert configured_with == [helper.Settings.loggingconf]
+    assert configured_with == [str(custom_config)]
 
 
 @pytest.mark.parametrize("log_file", ["logs/aqt.log", r"C:\Users\me\aqt 100%.log", "it's.log"])

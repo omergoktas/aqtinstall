@@ -28,7 +28,7 @@ Fixed
 Added
 -----
 - Download large archives over several connections and mirrors at once
-- ``AQT_LOG_FILE`` environment variable to move or turn off ``aqtinstall.log``
+- ``AQT_LOG_FILE`` environment variable to name a log file
 - Release binaries for windows-arm64, macos15-arm64 (#931)
 - log commands of safely_run and safely_run_save_output (#1026)
 - Support Qt 6.11+ for Windows X64(#1000)
@@ -36,6 +36,7 @@ Added
 
 Changed
 -------
+- No ``aqtinstall.log`` is written unless ``AQT_LOG_FILE`` names a log file
 - Minimum Python 3.10 (#970)
 - Migrate TOX configuration to native toml (#962)
 - Correct a config example and typos in a manual (#1034, #1033)

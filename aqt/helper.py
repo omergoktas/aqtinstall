@@ -969,9 +969,13 @@ def _logging_config(log_file: str) -> Optional[ConfigParser]:
 
 def setup_logging(env_key="LOG_CFG", log_file_env_key="AQT_LOG_FILE"):
     config = os.getenv(env_key, None)
-    if config is not None and os.path.exists(config):
+    own_config = config is not None and os.path.exists(config)
+    if own_config:
         Settings.loggingconf = config
     log_file = os.getenv(log_file_env_key, None)
+    if log_file is None and not own_config:
+        # aqt's own configuration writes a log file only when one is asked for
+        log_file = ""
     changed_config = None if log_file is None else _logging_config(log_file)
     if changed_config is None:
         logging.config.fileConfig(Settings.loggingconf)
