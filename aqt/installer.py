@@ -62,6 +62,7 @@ from aqt.exceptions import (
 from aqt.helper import (
     ConnectionBudget,
     MyQueueListener,
+    ServerFacts,
     Settings,
     download_installer,
     downloadBinaryFile,
@@ -1587,7 +1588,7 @@ def run_installer(
     # The workers share the install's connections: a large archive downloads alone over all of
     # them, small ones side by side over one each, and a worker unpacks what it has downloaded
     # while the others download on
-    budget = ConnectionBudget(manager.Condition(), manager.dict(), Settings.max_connections)
+    budget = ConnectionBudget(manager.Condition(), manager.dict(), Settings.connections)
     listener = MyQueueListener(queue)
     listener.start()
     #
@@ -1731,7 +1732,7 @@ def installer(
     archive_dest: Path,
     settings_ini: str,
     keep: bool,
-    servers_known: Optional[MutableMapping[str, Tuple[float, float]]] = None,
+    servers_known: Optional[MutableMapping[str, ServerFacts]] = None,
     budget: Optional[ConnectionBudget] = None,
 ) -> None:
     """

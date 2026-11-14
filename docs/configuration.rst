@@ -31,7 +31,8 @@ A file is like as follows:
     retry_backoff: 0.1
     max_retries_on_checksum_error: 5
     max_retries_to_retrieve_hash: 5
-    max_connections: 8
+    connections: 8
+    max_connections: 32
     max_mirrors_tested: 8
     hash_algorithm: sha256
     INSECURE_NOT_FOR_PRODUCTION_ignore_hash: False
@@ -135,14 +136,24 @@ max_retries_on_checksum_error:
     This setting controls how many times ``aqt`` will attempt to download a file,
     in the case of a checksum error.
 
-max_connections:
-    The most connections ``aqt`` has open for downloading at once, all of them
+connections:
+    How many connections ``aqt`` has open for downloading at once, all of them
     to one server. An archive gets one for every 4 MiB of its size: a large
     archive takes them all and downloads alone, each connection fetching one
     part of the file after another, and small archives take one each and
     download side by side. So a line that drops costs the one large archive
     under way, or a few small ones. A server that does not hand out parts of a
     file gets one connection for each archive. Default is ``8``.
+
+max_connections:
+    An archive that downloads alone opens more connections than ``connections``
+    while it is fast enough to be worth them: one more for every 50 megabits a
+    second it delivers, up to this many. More connections only help where the
+    line and the server have bandwidth to spare, and the speed of the download
+    shows whether they have: on a slow line it stays at ``connections``. A
+    server that refuses a connection more is asked for no more than it had
+    until then, for the rest of the install. Set it to the value of
+    ``connections`` to open no more. Default is ``32``.
 
 max_mirrors_tested:
     When Qt's server sends a download on to a mirror, it also knows the other

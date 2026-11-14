@@ -424,6 +424,7 @@ class MirrorsWithRanges:
         seconds=None,
         bytes_a_second=None,
         silent_mirrors=(),
+        takes_connections=None,
     ):
         self.content = content
         self.broken_mirrors = broken_mirrors
@@ -441,6 +442,9 @@ class MirrorsWithRanges:
         # Mirrors that answer their test, and from then on say nothing until the caller's patience ends
         self.silent_mirrors = silent_mirrors
         self.patience = []
+        # The connections that asked each mirror for a range, and how many a mirror takes at once
+        self.connections = {}
+        self.takes_connections = takes_connections
         self.asked_lock = threading.Lock()
         mirrors = self
 
@@ -481,6 +485,11 @@ class MirrorsWithRanges:
             with mirrors.asked_lock:
                 mirrors.asked.append((url, first, last))
                 nth = sum(1 for asked_url, _, _ in mirrors.asked if asked_url == url)
+                connections = mirrors.connections.setdefault(url, [])
+                if id(session) not in connections:
+                    if mirrors.takes_connections is not None and len(connections) >= mirrors.takes_connections:
+                        return Answer(url, 503, {})
+                    connections.append(id(session))
             mirrors.patience.append(kwargs["timeout"])
             if url in mirrors.silent_mirrors and nth > 1:
                 raise requests.exceptions.ReadTimeout(f"{url} sent nothing for {kwargs['timeout'][1]} seconds")
@@ -537,8 +546,8 @@ def test_helper_downloadBinary_in_ranges_from_the_mirror_with_the_most_bandwidth
         "https://mirror2.example.com/pub/",
         "https://mirror3.example.com/pub/",
     }
-    assert known[helper._server_of(second)][0] > 5 * known[helper._server_of(first)][0]
-    assert known[helper._server_of(second)][1] > known[helper._server_of(first)][1]
+    assert known[helper._server_of(second)].bandwidth > 5 * known[helper._server_of(first)].bandwidth
+    assert known[helper._server_of(second)].latency > known[helper._server_of(first)].latency
     # No connection waits longer than a few seconds for a mirror that has gone silent
     assert set(mirrors.patience) == {(5, helper.SECONDS_OF_SILENCE_AT_MOST)}
 
@@ -557,7 +566,8 @@ def test_helper_downloadBinary_in_ranges_from_the_mirror_with_the_most_bandwidth
     ],
 )
 def test_helper_best_server(known, expected):
-    assert helper._best_server(["a", "b", "c"], known) == expected
+    facts = {server: helper.ServerFacts(*figures) for server, figures in known.items()}
+    assert helper._best_server(["a", "b", "c"], facts) == expected
 
 
 def test_helper_downloadBinary_goes_to_the_best_mirror_once_it_is_known(tmp_path, monkeypatch):
@@ -593,7 +603,7 @@ def test_helper_downloadBinary_goes_back_to_qts_server_when_the_best_mirror_has_
     content = os.urandom(500)
     first, second, third = MirrorsWithRanges.MIRRORS
     mirrors = MirrorsWithRanges(monkeypatch, content, without_file=[second])
-    helper._servers_known[helper._server_of(second)] = (9e6, 0.1)
+    helper._servers_known[helper._server_of(second)] = helper.ServerFacts(9e6, 0.1)
     out = tmp_path / "archive.7z"
     helper.downloadBinaryFile(mirrors.QT_URL, out, "sha256", hashlib.sha256(content).digest(), (5, 5))
     assert out.read_bytes() == content
@@ -629,7 +639,10 @@ def test_helper_downloadBinary_in_ranges_leaves_a_mirror_that_falls_behind(tmp_p
     assert mirrors.ranges_from(first) > mirrors.ranges_from(second)
     assert mirrors.asked[-1][0] == first
     assert mirrors.ranges_from(third) == 1
-    assert helper._servers_known[helper._server_of(second)][0] < helper._servers_known[helper._server_of(first)][0]
+    assert (
+        helper._servers_known[helper._server_of(second)].bandwidth
+        < helper._servers_known[helper._server_of(first)].bandwidth
+    )
 
 
 def test_helper_downloadBinary_in_ranges_leaves_a_mirror_that_goes_silent(tmp_path, monkeypatch):
@@ -651,7 +664,7 @@ def test_helper_downloadBinary_in_ranges_passes_a_broken_mirror_by(tmp_path, mon
     helper.downloadBinaryFile(mirrors.QT_URL, out, "sha256", hashlib.sha256(content).digest(), (5, 5))
     assert out.read_bytes() == content
     # Known as failed, so that no later download asks it
-    assert helper._servers_known[helper._server_of(MirrorsWithRanges.MIRRORS[1])] == (0.0, 0.0)
+    assert helper._servers_known[helper._server_of(MirrorsWithRanges.MIRRORS[1])] == helper.ServerFacts(0.0, 0.0)
 
 
 def test_helper_downloadBinary_in_ranges_fails_when_no_mirror_delivers(tmp_path, monkeypatch):
@@ -679,7 +692,7 @@ def test_helper_downloadBinary_in_ranges_checks_the_checksum(tmp_path, monkeypat
 def test_helper_downloadBinary_in_one_piece(tmp_path, monkeypatch, size, accept_ranges, connections):
     content = os.urandom(size)
     mirrors = MirrorsWithRanges(monkeypatch, content, accept_ranges=accept_ranges)
-    monkeypatch.setattr(helper.SettingsClass, "max_connections", connections)
+    monkeypatch.setattr(helper.SettingsClass, "connections", connections)
     out = tmp_path / "archive.7z"
     helper.downloadBinaryFile(mirrors.QT_URL, out, "sha256", hashlib.sha256(content).digest(), (5, 5))
     assert out.read_bytes() == content
@@ -726,6 +739,60 @@ def test_helper_downloadBinary_gives_up_when_no_mirror_has_the_file(tmp_path, mo
     )
     assert mirrors.asked_for_file == mirrors.MIRRORS
     assert not out.exists()
+
+
+def test_helper_downloadBinary_in_ranges_opens_more_connections_while_it_is_fast(tmp_path, monkeypatch):
+    content = os.urandom(60_000)
+    mirrors = MirrorsWithRanges(monkeypatch, content, bytes_a_second={MirrorsWithRanges.MIRRORS[0]: 20_000})
+    # Whatever this download delivers counts as fast, and one connection may follow another at once
+    monkeypatch.setattr(helper, "MEGABITS_PER_EXTRA_CONNECTION", 1e-9)
+    monkeypatch.setattr(helper, "MEGABITS_BEFORE_EXTRA_CONNECTIONS", 0)
+    monkeypatch.setattr(helper, "SECONDS_BETWEEN_EXTRA_CONNECTIONS", 0)
+    out = tmp_path / "archive.7z"
+    first = mirrors.MIRRORS[0]
+    # Without leave to open more, the download stays with its eight connections
+    helper._download_in_ranges([first], out, len(content), 8, (5, 5))
+    assert out.read_bytes() == content
+    assert len(mirrors.connections[first]) == 8
+    # With it, the download goes up to the most it may have
+    mirrors.connections.clear()
+    helper._download_in_ranges([first], out, len(content), 8, (5, 5), 12)
+    assert out.read_bytes() == content
+    assert len(mirrors.connections[first]) == 12
+
+
+def test_helper_downloadBinary_in_ranges_stays_at_its_connections_while_it_is_slow(tmp_path, monkeypatch):
+    content = os.urandom(20_000)
+    mirrors = MirrorsWithRanges(monkeypatch, content, bytes_a_second={MirrorsWithRanges.MIRRORS[0]: 20_000})
+    monkeypatch.setattr(helper, "SECONDS_BETWEEN_EXTRA_CONNECTIONS", 0)
+    out = tmp_path / "archive.7z"
+    first = mirrors.MIRRORS[0]
+    # Some hundred thousand bytes a second are far from the megabits that earn a connection more
+    helper._download_in_ranges([first], out, len(content), 8, (5, 5), 32)
+    assert out.read_bytes() == content
+    assert len(mirrors.connections[first]) == 8
+
+
+def test_helper_downloadBinary_in_ranges_learns_how_many_connections_a_mirror_takes(tmp_path, monkeypatch):
+    content = os.urandom(60_000)
+    first = MirrorsWithRanges.MIRRORS[0]
+    mirrors = MirrorsWithRanges(monkeypatch, content, bytes_a_second={first: 20_000}, takes_connections=10)
+    monkeypatch.setattr(helper, "MEGABITS_PER_EXTRA_CONNECTION", 1e-9)
+    monkeypatch.setattr(helper, "MEGABITS_BEFORE_EXTRA_CONNECTIONS", 0)
+    monkeypatch.setattr(helper, "SECONDS_BETWEEN_EXTRA_CONNECTIONS", 0)
+    helper._servers_known[helper._server_of(first)] = helper.ServerFacts(9e6, 0.1)
+    out = tmp_path / "archive.7z"
+    helper._download_in_ranges([first], out, len(content), 8, (5, 5), 32)
+    assert out.read_bytes() == content
+    # The eleventh connection was refused: the mirror is known to take ten, and is still the one in use
+    assert len(mirrors.connections[first]) == 10
+    assert helper._servers_known[helper._server_of(first)] == helper.ServerFacts(9e6, 0.1, 10)
+    # A later download asks it for no more than that
+    mirrors.connections.clear()
+    helper._download_in_ranges([first], out, len(content), 8, (5, 5), 32)
+    assert out.read_bytes() == content
+    assert len(mirrors.connections[first]) == 10
+    assert mirrors.asked.count((first, 0, 299)) >= 1
 
 
 def test_connection_budget():
