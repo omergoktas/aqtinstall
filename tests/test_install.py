@@ -4,10 +4,12 @@ import logging
 import os
 import posixpath
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
 import textwrap
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -57,6 +59,12 @@ class MockMultiprocessingContext:
 
 
 class MockMultiprocessingManager:
+    def dict(self):
+        return {}
+
+    def Condition(self):
+        return threading.Condition()
+
     class Queue:
         def __init__(self, *args):
             pass
@@ -2104,6 +2112,12 @@ def test_install_installer_archive_route(monkeypatch, content, looks_like_zip, c
             def extractall(self, path):
                 pass
 
+            def getnames(self):
+                return []
+
+            def namelist(self):
+                return []
+
         return Archive
 
     def mock_external_extractor(*args, **kwargs):
@@ -2137,3 +2151,50 @@ def test_install_installer_archive_route(monkeypatch, content, looks_like_zip, c
             keep=False,
         )
     assert routes == [expected_route]
+
+
+def make_one_file_archive(folder: Path) -> QtPackage:
+    """Makes a 7z archive that holds one file, and the package that names it"""
+    with py7zr.SevenZipFile(folder / "made.7z", "w") as szf:
+        szf.writestr(b"a tool", "6.9.9/gcc_64/bin/tool")
+    return QtPackage(
+        "qtbase", "base_url", "online/qtsdkrepository/archive.7z", "archive.7z", "", "package_desc", "pkg_update_name"
+    )
+
+
+def install_one_file_archive(monkeypatch, folder: Path, qt_package: QtPackage, **more) -> List[str]:
+    """Installs the archive into the folder's `out`, and returns what happened, in order"""
+    happened: List[str] = []
+
+    def mock_download(url, out, *args):
+        happened.append("downloaded")
+        shutil.copy(folder / "made.7z", out)
+
+    monkeypatch.setattr("aqt.installer.get_hash", lambda *args, **kwargs: "")
+    monkeypatch.setattr("aqt.installer.downloadBinaryFile", mock_download)
+    installer(
+        qt_package=qt_package,
+        base_dir=str(folder / "out"),
+        command=None,
+        queue=MockMultiprocessingManager.Queue(),
+        archive_dest=folder,
+        settings_ini=Settings.configfile,
+        keep=more.pop("keep", False),
+        **more,
+    )
+    return happened
+
+
+def test_install_installer_passes_over_an_archive_installed_already(monkeypatch, tmp_path):
+    qt_package = make_one_file_archive(tmp_path)
+    tool = tmp_path / "out" / "6.9.9" / "gcc_64" / "bin" / "tool"
+    assert install_one_file_archive(monkeypatch, tmp_path, qt_package) == ["downloaded"]
+    assert tool.read_bytes() == b"a tool"
+    # A second run finds the archive installed, and downloads nothing
+    assert install_one_file_archive(monkeypatch, tmp_path, qt_package) == []
+    # An archive that is to be kept is downloaded whatever is installed
+    assert install_one_file_archive(monkeypatch, tmp_path, qt_package, keep=True) == ["downloaded"]
+    # Once its file is gone, the archive is installed anew
+    tool.unlink()
+    assert install_one_file_archive(monkeypatch, tmp_path, qt_package) == ["downloaded"]
+    assert tool.read_bytes() == b"a tool"

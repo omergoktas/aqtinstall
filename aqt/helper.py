@@ -43,11 +43,27 @@ import uuid
 from collections import deque
 from configparser import ConfigParser
 from configparser import Error as ConfigParserError
+from contextlib import ExitStack, contextmanager, nullcontext
 from logging import Handler, getLogger
 from logging.handlers import QueueListener
 from pathlib import Path
 from threading import Event, Lock, Thread
-from typing import Any, Callable, Deque, Dict, Generator, List, Optional, Set, TextIO, Tuple, Union
+from typing import (
+    Any,
+    Callable,
+    ContextManager,
+    Deque,
+    Dict,
+    Generator,
+    Iterator,
+    List,
+    MutableMapping,
+    Optional,
+    Set,
+    TextIO,
+    Tuple,
+    Union,
+)
 from urllib.parse import urlparse
 from xml.etree.ElementTree import Element
 
@@ -236,7 +252,67 @@ def getUrl(url: str, timeout: Tuple[float, float], expected_hash: Optional[bytes
     return result
 
 
+class ConnectionBudget:
+    """
+    The connections one install may have open for downloading at once, shared by its workers.
+
+    A download takes as many connections as it will use, and gives them back when it is done. A
+    small archive takes one, so several of them download side by side; a large one takes them
+    all, so it downloads alone. A line that drops then costs the one large archive under way, or
+    a few small ones, and a server never gets more connections than these. Downloads are served
+    in the order they ask, so a large one is not kept waiting by small ones that come after it.
+
+    `condition` and `state` are a condition variable and a dict that the workers share, such as
+    those of a multiprocessing manager.
+    """
+
+    def __init__(self, condition: Any, state: MutableMapping[str, int], connections: int) -> None:
+        self._condition = condition
+        self._state = state
+        state.update(free=connections, asked=0, served=0)
+
+    @contextmanager
+    def take(self, connections: int) -> Iterator[None]:
+        with self._condition:
+            turn = self._state["asked"]
+            self._state["asked"] = turn + 1
+            self._condition.wait_for(lambda: self._state["served"] == turn and self._state["free"] >= connections)
+            self._state["free"] -= connections
+            self._state["served"] = turn + 1
+            self._condition.notify_all()
+        try:
+            yield
+        finally:
+            with self._condition:
+                self._state["free"] += connections
+                self._condition.notify_all()
+
+
+# The budget this process downloads within, when it is a worker of an install
+_connection_budget: Optional[ConnectionBudget] = None
+
+
+def share_connection_budget(budget: ConnectionBudget) -> None:
+    """Makes this process download within `budget`, which it shares with the other workers of the same install."""
+    global _connection_budget
+    _connection_budget = budget
+
+
+def _connections(count: int) -> ContextManager[None]:
+    """Takes `count` connections of the install's budget for as long as the context lasts."""
+    return _connection_budget.take(count) if _connection_budget is not None else nullcontext()
+
+
 def downloadBinaryFile(url: str, out: Path, hash_algo: str, exp: Optional[bytes], timeout: Tuple[float, float]) -> None:
+    with ExitStack() as held:
+        # One connection to find out the file's size, which is all a small file needs
+        held.enter_context(_connections(1))
+        _download_binary_file(url, out, hash_algo, exp, timeout, held)
+
+
+def _download_binary_file(
+    url: str, out: Path, hash_algo: str, exp: Optional[bytes], timeout: Tuple[float, float], held: ExitStack
+) -> None:
     logger = getLogger("aqt.helper")
     filename = Path(url).name
     with requests.sessions.Session() as session:
@@ -246,13 +322,21 @@ def downloadBinaryFile(url: str, out: Path, hash_algo: str, exp: Optional[bytes]
         adapter = requests.adapters.HTTPAdapter(max_retries=retries)
         session.mount("http://", adapter)
         session.mount("https://", adapter)
+        # The file's address from Qt's repository folder on, which is the same on every server
+        path = url[len(_server_of(url)) :] if _server_of(url) != url else ""
+        best_first = _servers_known_best_first() if path else []
         try:
-            r = session.get(url, allow_redirects=False, stream=True, timeout=timeout)
-            if 300 < r.status_code < 309:
-                logger.debug("Asked to redirect({}) to: {}".format(r.status_code, r.headers["Location"]))
-                newurl = altlink(r.url, r.headers["Location"])
-                logger.info("Redirected: {}".format(urlparse(newurl).hostname))
-                r = session.get(newurl, stream=True, timeout=timeout)
+            r = None
+            if best_first and best_first[0] + path != url:
+                # A server is known to be the best: ask it for the file, without the way round Qt's server
+                r = _answer_of_known_server(session, best_first[0] + path, timeout)
+            if r is None:
+                r = session.get(url, allow_redirects=False, stream=True, timeout=timeout)
+                if 300 < r.status_code < 309:
+                    logger.debug("Asked to redirect({}) to: {}".format(r.status_code, r.headers["Location"]))
+                    newurl = altlink(r.url, r.headers["Location"])
+                    logger.info("Redirected: {}".format(urlparse(newurl).hostname))
+                    r = session.get(newurl, stream=True, timeout=timeout)
         except requests.exceptions.ConnectionError as e:
             raise ArchiveConnectionError(f"Connection error: {e.args}") from e
         except requests.exceptions.Timeout as e:
@@ -269,13 +353,19 @@ def downloadBinaryFile(url: str, out: Path, hash_algo: str, exp: Optional[bytes]
                 )
             hash = hashlib.new(hash_algo, usedforsecurity=False)
             size = int(r.headers.get("Content-Length") or 0)
-            connections = min(Settings.max_connections_per_file, size // BYTES_PER_RANGE)
+            connections = min(Settings.max_connections, size // BYTES_PER_RANGE)
             if connections > 1 and r.headers.get("Accept-Ranges", "").lower() == "bytes":
-                # Large enough to be worth several connections, and the server hands out ranges of it
+                # Large enough to be worth several connections, and the server hands out ranges of it:
+                # give the one connection back, and wait for as many as the file is worth
                 r.close()
+                held.close()
+                held.enter_context(_connections(connections))
                 servers = [r.url]
-                if r.url != url:
-                    # Qt's server sent us to a mirror, so it has a list of the others too
+                if best_first and path:
+                    # The servers known already, to go on with should this one fail
+                    servers += [server + path for server in best_first if server + path != r.url]
+                elif r.url != url:
+                    # Qt's server sent us to a mirror, so it has a list of the others too, to test
                     servers += _other_mirrors(url, r.url)[: Settings.max_mirrors_tested - 1]
                 _download_in_ranges(servers, out, size, connections, timeout)
                 with open(out, "rb") as fd:
@@ -310,8 +400,8 @@ def downloadBinaryFile(url: str, out: Path, hash_algo: str, exp: Optional[bytes]
 # line: an archive under some 10 MB gains nothing from more connections, and one of 26 MB comes
 # in 2.1 s where a single connection takes 3.6 s.
 BYTES_PER_RANGE = 4 * 1024 * 1024
-# The first range a connection asks for when the servers are tested. Its second half shows a
-# server's bandwidth; its first half is spent on a new connection's slow start.
+# The first range a connection asks for when the servers are tested: enough bytes for a new
+# connection to get past its slow start and show the server's bandwidth
 BYTES_PER_TEST = 2 * 1024 * 1024
 # The servers are tested only for a file large enough that the tests are a quarter of it at most
 TESTS_SHARE_OF_FILE = 0.25
@@ -328,10 +418,39 @@ RANGES_PER_JUDGEMENT = 8
 # A server in use is left for the next best one once it has slowed down so much that the next
 # best one, going by the tests, would deliver this much more
 SHARE_OF_NEXT_BEST_TO_STAY = 0.75
-# What this process has learned of each server, by its host name: its bandwidth, the bytes a
-# second that one connection to it delivered, and its latency, the seconds it took to answer a
-# request. A later download in the same process starts on the best one at once.
-_servers_known: Dict[str, Tuple[float, float]] = {}
+# Where Qt's files begin on Qt's own server and on every mirror: what follows this folder's
+# name in a file's address is the same on all of them
+REPOSITORY_FOLDER = "online/qtsdkrepository/"
+# What is known of each server, by the address of its copy of Qt's files: its bandwidth, the
+# bytes a second that one connection to it delivered, and its latency, the seconds it took to
+# answer a request. A server that failed has no bandwidth. Every download that follows goes to
+# the best one at once, whatever the file's size. The processes of one install share this.
+_servers_known: MutableMapping[str, Tuple[float, float]] = {}
+
+
+def share_servers_known(known: MutableMapping[str, Tuple[float, float]]) -> None:
+    """Makes `known` what this process knows of the servers, so that it learns from the other
+    processes of the same install and they from it."""
+    global _servers_known
+    _servers_known = known
+
+
+def _server_of(url: str) -> str:
+    """Returns the address of the server's copy of Qt's files for a file's `url` there, which is
+    the `url` itself for a file outside Qt's repository."""
+    at = url.find("/" + REPOSITORY_FOLDER)
+    return url[: at + 1] if at >= 0 else url
+
+
+def _servers_known_best_first() -> List[str]:
+    """Returns the servers known to deliver, the best one first."""
+    known = dict(_servers_known.items())
+    servers = [server for server, (bandwidth, _) in known.items() if bandwidth > 0]
+    best_first = []
+    while servers:
+        best_first.append(_best_server(servers, known))
+        servers.remove(best_first[-1])
+    return best_first
 
 
 def _best_server(servers: List[str], known: Dict[str, Tuple[float, float]]) -> str:
@@ -375,6 +494,25 @@ def _other_mirrors(url: str, chosen: str) -> List[str]:
         and urlparse(mirror).scheme == scheme
         and not any(mirror.startswith(b) for b in Settings.blacklist)
     ]
+
+
+def _answer_of_known_server(
+    session: requests.Session, url: str, timeout: Tuple[float, float]
+) -> Optional[requests.Response]:
+    """
+    Asks a server that is known to be the best for the file at `url` on it. Returns its answer,
+    or None when it does not deliver the file. A server that cannot be reached is known as failed
+    from then on, so that no download of this install asks it again.
+    """
+    try:
+        r = session.get(url, stream=True, timeout=timeout)
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+        _servers_known[_server_of(url)] = (0.0, 0.0)
+        return None
+    if r.status_code != 200:
+        r.close()
+        return None
+    return r
 
 
 def _answer_of_another_mirror(
@@ -422,24 +560,18 @@ def _download_range(
             raise ArchiveConnectionError(f"{urlparse(url).hostname} answered a request for a range with {r.status_code}")
         chunks = []
         received = 0
-        halfway: Optional[Tuple[float, int]] = None
         # Small chunks, so that a slow connection notices soon that it may stop
         for chunk in r.iter_content(chunk_size=1 << 16):
             if is_needless():
                 return None
             chunks.append(chunk)
             received += len(chunk)
-            if halfway is None and received >= size // 2:
-                halfway = (time.monotonic(), received)
         ended = time.monotonic()
         if received != size:
             raise ArchiveConnectionError(f"{urlparse(url).hostname} sent {received} of {size} bytes")
-        # The second half of the range tells the bandwidth: a new connection starts slowly, and a
-        # range that came in one piece has no second half to time
-        if halfway is not None and received > halfway[1] and ended > halfway[0]:
-            bandwidth = (received - halfway[1]) / (ended - halfway[0])
-        else:
-            bandwidth = received / max(ended - answered, 1e-6)
+        # The whole range is timed. Timing a part of it misleads: while this thread waits for its
+        # turn to run, the bytes pile up, and then seem to come all at once.
+        bandwidth = received / max(ended - answered, 1e-6)
         return b"".join(chunks), bandwidth, answered - asked
 
 
@@ -484,9 +616,11 @@ def _download_in_ranges(servers: List[str], out: Path, size: int, connections: i
     def megabytes(bandwidth: float) -> str:
         return f"{bandwidth / 1e6:.1f} MB/s"
 
+    shared = dict(_servers_known.items())
     known: Dict[str, Tuple[float, float]] = {
-        server: _servers_known[host(server)] for server in servers if host(server) in _servers_known
+        server: shared[_server_of(server)] for server in servers if shared.get(_server_of(server), (0.0, 0.0))[0] > 0
     }
+    left: Set[str] = {server for server in servers if _server_of(server) in shared and server not in known}
     tested: List[str] = []
     if not known and len(servers) > 1:
         candidates = servers[:connections]
@@ -500,9 +634,8 @@ def _download_in_ranges(servers: List[str], out: Path, size: int, connections: i
         position += length
     total = len(waiting)
     started: Dict[Range, float] = {}
-    shared: Set[Range] = set()
+    taken_twice: Set[Range] = set()
     fetched: Set[Range] = set()
-    left: Set[str] = set()
     delivered: Dict[str, int] = {}
     judged: List[str] = []
     paces: List[float] = []
@@ -517,11 +650,11 @@ def _download_in_ranges(servers: List[str], out: Path, size: int, connections: i
                 taken = waiting.popleft()
                 started[taken] = time.monotonic()
                 return taken
-            slow = [under_way for under_way in started if under_way not in fetched and under_way not in shared]
+            slow = [under_way for under_way in started if under_way not in fetched and under_way not in taken_twice]
             if not slow:
                 return None
             taken = min(slow, key=lambda under_way: started[under_way])
-            shared.add(taken)
+            taken_twice.add(taken)
             return taken
 
     def best() -> str:
@@ -536,13 +669,14 @@ def _download_in_ranges(servers: List[str], out: Path, size: int, connections: i
         with lock:
             if server not in left:
                 left.add(server)
+                _servers_known[_server_of(server)] = (0.0, 0.0)
                 logger.debug(f"{host(server)} is used no more for {out.name}: {reason}")
 
     def learn(server: str, bandwidth: float, latency: float, is_test: bool, is_warm: bool) -> None:
         """Takes in what one range showed of `server`, and leaves the server when it has fallen behind."""
         with lock:
             if is_test:
-                known[server] = _servers_known[host(server)] = (bandwidth, latency)
+                known[server] = _servers_known[_server_of(server)] = (bandwidth, latency)
                 logger.debug(
                     f"{host(server)}: {megabytes(bandwidth)} for one connection, answers in {latency * 1000:.0f} ms"
                 )
@@ -567,7 +701,7 @@ def _download_in_ranges(servers: List[str], out: Path, size: int, connections: i
             expected_of_next_best = at_first * min(1.0, known[next_best][0] / known[server][0])
             if lately < SHARE_OF_NEXT_BEST_TO_STAY * expected_of_next_best:
                 left.add(server)
-                known[server] = _servers_known[host(server)] = (known[server][0] * lately / at_first, known[server][1])
+                known[server] = _servers_known[_server_of(server)] = (known[server][0] * lately / at_first, known[server][1])
                 logger.info(
                     f"{host(server)} slowed down from {megabytes(at_first)} to {megabytes(lately)} for each connection; "
                     f"going on with {host(next_best)}"
@@ -1000,8 +1134,8 @@ class SettingsClass:
         return self.config.getint("requests", "max_retries_on_checksum_error", fallback=int(self.max_retries))
 
     @property
-    def max_connections_per_file(self):
-        return self.config.getint("requests", "max_connections_per_file", fallback=8)
+    def max_connections(self):
+        return self.config.getint("requests", "max_connections", fallback=8)
 
     @property
     def max_mirrors_tested(self):

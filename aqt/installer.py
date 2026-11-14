@@ -25,6 +25,8 @@
 import argparse
 import errno
 import gc
+import hashlib
+import json
 import multiprocessing
 import os
 import platform
@@ -40,7 +42,7 @@ from logging import getLogger
 from logging.handlers import QueueHandler
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import List, Optional, Tuple, cast
+from typing import List, MutableMapping, Optional, Tuple, cast
 
 import aqt
 from aqt.archives import QtArchives, QtPackage, SrcDocExamplesArchives, ToolArchives
@@ -58,6 +60,7 @@ from aqt.exceptions import (
     OutOfMemory,
 )
 from aqt.helper import (
+    ConnectionBudget,
     MyQueueListener,
     Settings,
     download_installer,
@@ -72,6 +75,8 @@ from aqt.helper import (
     retry_on_errors,
     safely_run_save_output,
     setup_logging,
+    share_connection_budget,
+    share_servers_known,
 )
 from aqt.metadata import ArchiveId, MetadataFactory, QtRepoProperty, SimpleSpec, Version, show_list, suggested_follow_up
 from aqt.updater import Updater, dir_for_version
@@ -1574,13 +1579,21 @@ def run_installer(
         logger.info(f"Total packages: {len(archives)}")
         return
 
-    queue = multiprocessing.Manager().Queue(-1)
+    manager = multiprocessing.Manager()
+    queue = manager.Queue(-1)
+    # What a download worker learns of the servers serves all of them: the first large archive
+    # shows which server is best, and every archive after it goes there
+    servers_known = manager.dict()
+    # The workers share the install's connections: a large archive downloads alone over all of
+    # them, small ones side by side over one each, and a worker unpacks what it has downloaded
+    # while the others download on
+    budget = ConnectionBudget(manager.Condition(), manager.dict(), Settings.max_connections)
     listener = MyQueueListener(queue)
     listener.start()
     #
     tasks = []
     for arc in archives:
-        tasks.append((arc, base_dir, sevenzip, queue, archive_dest, Settings.configfile, keep))
+        tasks.append((arc, base_dir, sevenzip, queue, archive_dest, Settings.configfile, keep, servers_known, budget))
     ctx = multiprocessing.get_context("spawn")
     if is_64bit():
         pool = ctx.Pool(Settings.concurrency, init_worker_sh, (), 4)
@@ -1669,6 +1682,47 @@ def _is_7zfile(archive: Path) -> bool:
         return False
 
 
+# The folder of the output folder that records which archives are installed there
+INSTALLED_RECORDS_FOLDER = ".aqtinstall"
+# How many of an archive's files its record names, to tell later that they are still there
+FILES_PER_INSTALLED_RECORD = 3
+
+
+def _installed_record(output_dir: str, qt_package: QtPackage) -> Path:
+    """Returns the file that records `qt_package`'s archive as installed into `output_dir`."""
+    digest = hashlib.sha256(qt_package.archive_path.encode("utf-8")).hexdigest()[:16]
+    return Path(output_dir) / INSTALLED_RECORDS_FOLDER / f"{qt_package.archive}.{digest}.json"
+
+
+def _is_installed(record: Path, extracted_to: str) -> bool:
+    """Tells whether the archive of `record` is installed: it was unpacked in full once, and the
+    files its record names are still where they were unpacked."""
+    try:
+        files = json.loads(record.read_text(encoding="utf-8"))["files"]
+    except (OSError, ValueError, KeyError):
+        return False
+    return bool(files) and all(Path(extracted_to, file).exists() for file in files)
+
+
+def _record_as_installed(record: Path, qt_package: QtPackage, extracted_to: str, names: List[str]) -> None:
+    """Records the archive as installed, with a few of the files it brought. An archive whose
+    files are not known, as with an external extraction tool, gets no record, and so is
+    installed again by a later run."""
+    files: List[str] = []
+    for name in names:
+        if len(files) == FILES_PER_INSTALLED_RECORD:
+            break
+        path = Path(extracted_to, name)
+        if path.is_file() and not path.is_symlink():
+            files.append(name)
+    if not files:
+        return
+    record.parent.mkdir(parents=True, exist_ok=True)
+    unfinished = record.with_name(record.name + ".part")
+    unfinished.write_text(json.dumps({"archive": qt_package.archive_path, "files": files}, indent=1), encoding="utf-8")
+    os.replace(unfinished, record)
+
+
 def installer(
     qt_package: QtPackage,
     base_dir: str,
@@ -1677,14 +1731,20 @@ def installer(
     archive_dest: Path,
     settings_ini: str,
     keep: bool,
+    servers_known: Optional[MutableMapping[str, Tuple[float, float]]] = None,
+    budget: Optional[ConnectionBudget] = None,
 ) -> None:
     """
     Installer function to download archive files and extract it.
     It is called through multiprocessing.Pool()
+
+    An archive that an earlier run installed in full is passed over, so a run that was cut off
+    goes on where it stopped, and a run that asks for more than is there fetches only the rest.
     """
     name = qt_package.name
     base_url = qt_package.base_url
     archive: Path = archive_dest / qt_package.archive
+    record = _installed_record(base_dir, qt_package)
     base_dir = posixpath.join(base_dir, qt_package.archive_install_path)
     start_time = time.perf_counter()
     Settings.load_settings(file=settings_ini)
@@ -1696,6 +1756,17 @@ def installer(
         handler.close()
         logger.removeHandler(handler)
     logger.addHandler(qh)
+    if servers_known is not None:
+        share_servers_known(servers_known)
+    if budget is not None:
+        share_connection_budget(budget)
+    # An archive that is to be kept has to be downloaded whatever is installed
+    if not keep and _is_installed(record, base_dir):
+        logger.info("Already installed: {}".format(qt_package.archive))
+        qh.flush()
+        qh.close()
+        logger.removeHandler(qh)
+        return
     #
     timeout = (Settings.connection_timeout, Settings.response_timeout)
     hash = get_hash(qt_package.archive_path, Settings.hash_algorithm, timeout) if not Settings.ignore_hash else None
@@ -1714,8 +1785,10 @@ def installer(
     gc.collect()
 
     is_7z = _is_7zfile(archive)
+    names: List[str] = []
     if tarfile.is_tarfile(archive):
         with tarfile.open(archive) as tar_archive:
+            names = tar_archive.getnames()
             if hasattr(tarfile, "data_filter"):
                 tar_archive.extractall(filter="tar", path=base_dir)
             else:
@@ -1724,9 +1797,11 @@ def installer(
                 tar_archive.extractall(path=base_dir)
     elif is_7z and command is None:
         with py7zr.SevenZipFile(archive, "r") as szf:
+            names = szf.getnames()
             szf.extractall(path=base_dir)
     elif not is_7z and zipfile.is_zipfile(archive):
         with zipfile.ZipFile(archive) as zip_archive:
+            names = zip_archive.namelist()
             zip_archive.extractall(path=base_dir)
     elif command is not None:
         # A 7z archive, or a format not recognized here, which the external tool may still know
@@ -1741,6 +1816,7 @@ def installer(
         raise ArchiveExtractionError(
             f"Unable to extract '{archive.name}': unrecognized archive format (expected tar, 7z or zip)"
         )
+    _record_as_installed(record, qt_package, base_dir, names)
     if not keep:
         os.unlink(archive)
     logger.info("Finished installation of {} in {:.8f}".format(archive.name, time.perf_counter() - start_time))

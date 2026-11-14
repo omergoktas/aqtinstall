@@ -28,6 +28,7 @@ Fixed
 Added
 -----
 - Download large archives over several connections to the fastest mirror
+- Pass over archives that an earlier run installed, so a run that was cut off goes on where it stopped
 - ``AQT_LOG_FILE`` environment variable to name a log file
 - Release binaries for windows-arm64, macos15-arm64 (#931)
 - log commands of safely_run and safely_run_save_output (#1026)

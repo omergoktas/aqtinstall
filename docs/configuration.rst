@@ -31,7 +31,7 @@ A file is like as follows:
     retry_backoff: 0.1
     max_retries_on_checksum_error: 5
     max_retries_to_retrieve_hash: 5
-    max_connections_per_file: 8
+    max_connections: 8
     max_mirrors_tested: 8
     hash_algorithm: sha256
     INSECURE_NOT_FOR_PRODUCTION_ignore_hash: False
@@ -60,7 +60,8 @@ Settings
 The ``[aqt]`` section configures basic behavior.
 
 concurrency:
-    ``concurrency`` is a setting how many download concurrently starts.
+    ``concurrency`` is a setting how many archives are worked on at once: each is
+    downloaded, within ``max_connections``, and then unpacked.
     It should be a integer value.
 
 baseurl:
@@ -134,13 +135,14 @@ max_retries_on_checksum_error:
     This setting controls how many times ``aqt`` will attempt to download a file,
     in the case of a checksum error.
 
-max_connections_per_file:
-    ``aqt`` downloads a large archive over several connections to one server at
-    once, each of which fetches one part of the file after another, when the
-    server hands out parts of a file. This is the largest number of connections
-    for one archive; an archive gets one for every 4 MiB of its size, so a small
-    archive is still downloaded over a single connection. Set it to ``1`` to
-    download every archive over a single connection. Default is ``8``.
+max_connections:
+    The most connections ``aqt`` has open for downloading at once, all of them
+    to one server. An archive gets one for every 4 MiB of its size: a large
+    archive takes them all and downloads alone, each connection fetching one
+    part of the file after another, and small archives take one each and
+    download side by side. So a line that drops costs the one large archive
+    under way, or a few small ones. A server that does not hand out parts of a
+    file gets one connection for each archive. Default is ``8``.
 
 max_mirrors_tested:
     When Qt's server sends a download on to a mirror, it also knows the other
@@ -152,7 +154,8 @@ max_mirrors_tested:
     fast as each other, the one that answers soonest. A mirror that slows down
     well below its own earlier pace, fails, or sends nothing for a few seconds
     is left for the next best one. What ``aqt`` learns of the mirrors holds for
-    every further archive the same process downloads. The finished archive is
+    every further archive of the install, whatever its size, which then goes to
+    the best mirror straight away. The finished archive is
     checked against the checksum from the ``trusted_mirrors``, as every
     download is. The same number limits how many mirrors are asked for a file
     when one answers with an error. Set it to ``1`` to stay with the mirror the
