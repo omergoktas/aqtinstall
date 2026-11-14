@@ -27,7 +27,7 @@ Fixed
 
 Added
 -----
-- Download large archives over several connections and mirrors at once
+- Download large archives over several connections to the fastest mirror
 - ``AQT_LOG_FILE`` environment variable to name a log file
 - Release binaries for windows-arm64, macos15-arm64 (#931)
 - log commands of safely_run and safely_run_save_output (#1026)

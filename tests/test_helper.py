@@ -3,6 +3,7 @@ import hashlib
 import os
 import re
 import threading
+import time
 from pathlib import Path
 from typing import Dict
 from urllib.parse import urlparse
@@ -413,7 +414,15 @@ class MirrorsWithRanges:
 </metalink>""".format(*MIRRORS)
 
     def __init__(
-        self, monkeypatch, content: bytes, broken_mirrors=(), accept_ranges="bytes", answer_once_asked_by=0, without_file=()
+        self,
+        monkeypatch,
+        content: bytes,
+        broken_mirrors=(),
+        accept_ranges="bytes",
+        without_file=(),
+        seconds=None,
+        bytes_a_second=None,
+        silent_mirrors=(),
     ):
         self.content = content
         self.broken_mirrors = broken_mirrors
@@ -421,16 +430,23 @@ class MirrorsWithRanges:
         self.asked_for_file = []
         self.accept_ranges = accept_ranges
         self.asked = []
-        # No range is answered before this many connections have asked for one, so that a test
-        # can count on all of them taking part, however fast the first one is
-        self.connections = set()
-        self.connection_arrived = threading.Condition()
+        # How long each mirror takes to answer a request for a range, its latency, and how fast
+        # the range's bytes then come, its bandwidth: a number, or a function that gives it for
+        # the mirror's first, second and every further such request. A mirror not named answers
+        # at once and delivers 5,000 bytes a second, so that a range takes long enough to time.
+        self.seconds = seconds or {}
+        self.bytes_a_second = bytes_a_second or {}
+        # Mirrors that answer their test, and from then on say nothing until the caller's patience ends
+        self.silent_mirrors = silent_mirrors
+        self.patience = []
+        self.asked_lock = threading.Lock()
         mirrors = self
 
         class Answer:
-            def __init__(self, url: str, status_code: int, headers: Dict[str, str], body: bytes = b""):
+            def __init__(self, url: str, status_code: int, headers: Dict[str, str], body: bytes = b"", bytes_a_second=0):
                 self.url, self.status_code, self.headers, self.body = url, status_code, headers, body
                 self.reason = "a reason"
+                self.bytes_a_second = bytes_a_second
 
             def __enter__(self):
                 return self
@@ -443,7 +459,10 @@ class MirrorsWithRanges:
 
             def iter_content(self, chunk_size):
                 for start in range(0, len(self.body), chunk_size):
-                    yield self.body[start : start + chunk_size]
+                    chunk = self.body[start : start + chunk_size]
+                    if self.bytes_a_second:
+                        time.sleep(len(chunk) / self.bytes_a_second)
+                    yield chunk
 
         def mock_get(session, url, **kwargs):
             wanted = kwargs.get("headers", {}).get("Range")
@@ -456,14 +475,19 @@ class MirrorsWithRanges:
                 headers = {"Content-Length": str(len(mirrors.content)), "Accept-Ranges": mirrors.accept_ranges}
                 return Answer(url, 200, headers, mirrors.content)
             first, last = (int(number) for number in wanted[len("bytes=") :].split("-"))
-            mirrors.asked.append((url, first, last))
-            with mirrors.connection_arrived:
-                mirrors.connections.add(threading.get_ident())
-                mirrors.connection_arrived.notify_all()
-                mirrors.connection_arrived.wait_for(lambda: len(mirrors.connections) >= answer_once_asked_by, timeout=5)
+            with mirrors.asked_lock:
+                mirrors.asked.append((url, first, last))
+                nth = sum(1 for asked_url, _, _ in mirrors.asked if asked_url == url)
+            mirrors.patience.append(kwargs["timeout"])
+            if url in mirrors.silent_mirrors and nth > 1:
+                raise requests.exceptions.ReadTimeout(f"{url} sent nothing for {kwargs['timeout'][1]} seconds")
+            seconds = mirrors.seconds.get(url, 0)
+            time.sleep(seconds(nth) if callable(seconds) else seconds)
             if url in mirrors.broken_mirrors:
                 return Answer(url, 503, {})
-            return Answer(url, 206, {}, mirrors.content[first : last + 1])
+            bytes_a_second = mirrors.bytes_a_second.get(url, 5_000)
+            bytes_a_second = bytes_a_second(nth) if callable(bytes_a_second) else bytes_a_second
+            return Answer(url, 206, {}, mirrors.content[first : last + 1], bytes_a_second)
 
         class Metalink:
             status_code = 200
@@ -474,20 +498,115 @@ class MirrorsWithRanges:
         monkeypatch.setattr(helper, "_get_meta", lambda url: Metalink())
         # A file of some thousand bytes then counts as a large one
         monkeypatch.setattr(helper, "BYTES_PER_RANGE", 300)
+        monkeypatch.setattr(helper, "BYTES_PER_TEST", 100)
+        monkeypatch.setattr(helper, "RANGES_PER_JUDGEMENT", 4)
+        # Nothing is known of any server when a test starts
+        monkeypatch.setattr(helper, "_servers_known", {})
+
+    def ranges_from(self, mirror: str) -> int:
+        return sum(1 for url, _, _ in self.asked if url == mirror)
 
 
-def test_helper_downloadBinary_in_ranges_over_mirrors(tmp_path, monkeypatch):
+def test_helper_downloadBinary_in_ranges_from_the_mirror_with_the_most_bandwidth(tmp_path, monkeypatch):
     content = os.urandom(10_000)
-    mirrors = MirrorsWithRanges(monkeypatch, content, answer_once_asked_by=8)
+    first, second, third = MirrorsWithRanges.MIRRORS
+    # The second mirror answers last, but delivers ten times as fast as the others
+    mirrors = MirrorsWithRanges(
+        monkeypatch, content, seconds={first: 0.005, second: 0.03, third: 0.005}, bytes_a_second={second: 50_000}
+    )
+    out = tmp_path / "archive.7z"
+    helper.downloadBinaryFile(mirrors.QT_URL, out, "sha256", hashlib.sha256(content).digest(), (5, 30))
+    assert out.read_bytes() == content
+    # Each mirror was asked for one small range as a test, and none was the blacklisted one
+    assert {url for url, _, _ in mirrors.asked} == set(mirrors.MIRRORS)
+    assert {(first_byte, last_byte) for _, first_byte, last_byte in mirrors.asked if first_byte < 300} == {
+        (0, 99),
+        (100, 199),
+        (200, 299),
+    }
+    # The other two finish their tests first and serve the connections that are free by then, until the
+    # second mirror's test shows what it can do; from then on it serves them all
+    assert mirrors.ranges_from(second) > mirrors.ranges_from(first) + mirrors.ranges_from(third)
+    assert mirrors.asked[-1][0] == second
+    known = helper._servers_known
+    assert known["mirror2.example.com"][0] > 5 * known["mirror1.example.com"][0]
+    assert known["mirror2.example.com"][1] > known["mirror1.example.com"][1]
+    # No connection waits longer than a few seconds for a mirror that has gone silent
+    assert set(mirrors.patience) == {(5, helper.SECONDS_OF_SILENCE_AT_MOST)}
+
+
+@pytest.mark.parametrize(
+    "known, expected",
+    [
+        ({}, "a"),
+        ({"b": (9e6, 0.2), "c": (30e6, 0.4)}, "c"),
+        # About as fast as each other: the one that answers sooner
+        ({"a": (27.5e6, 0.05), "b": (30e6, 0.4), "c": (10e6, 0.01)}, "a"),
+        ({"a": (26e6, 0.05), "b": (30e6, 0.4), "c": (10e6, 0.01)}, "b"),
+        # A server that takes over a second to answer counts only when all do
+        ({"a": (5e6, 0.3), "b": (40e6, 1.5)}, "a"),
+        ({"a": (5e6, 1.3), "b": (40e6, 1.5)}, "b"),
+    ],
+)
+def test_helper_best_server(known, expected):
+    assert helper._best_server(["a", "b", "c"], known) == expected
+
+
+def test_helper_downloadBinary_in_ranges_keeps_what_it_learned_of_the_mirrors(tmp_path, monkeypatch):
+    content = os.urandom(10_000)
+    first, second, third = MirrorsWithRanges.MIRRORS
+    mirrors = MirrorsWithRanges(monkeypatch, content, bytes_a_second={second: 50_000})
+    out = tmp_path / "archive.7z"
+    helper.downloadBinaryFile(mirrors.QT_URL, out, "sha256", hashlib.sha256(content).digest(), (5, 5))
+    mirrors.asked.clear()
+    # A second file in the same process goes to the best mirror at once, with no test
+    helper.downloadBinaryFile(mirrors.QT_URL, out, "sha256", hashlib.sha256(content).digest(), (5, 5))
+    assert out.read_bytes() == content
+    assert {url for url, _, _ in mirrors.asked} == {second}
+    assert all(last_byte - first_byte + 1 == 300 or last_byte == 9_999 for _, first_byte, last_byte in mirrors.asked)
+
+
+def test_helper_downloadBinary_in_ranges_tests_no_mirror_for_a_file_too_small(tmp_path, monkeypatch):
+    # Three tests of 100 bytes would be more than a quarter of this file
+    content = os.urandom(1_000)
+    mirrors = MirrorsWithRanges(monkeypatch, content)
     out = tmp_path / "archive.7z"
     helper.downloadBinaryFile(mirrors.QT_URL, out, "sha256", hashlib.sha256(content).digest(), (5, 5))
     assert out.read_bytes() == content
-    # Every byte was asked for, in ranges of the set size
-    assert {(first, last) for _, first, last in mirrors.asked} == {
-        (first, min(first + 300, 10_000) - 1) for first in range(0, 10_000, 300)
-    }
-    # The eight connections took the three mirrors in turn, and none the blacklisted one
-    assert {url for url, _, _ in mirrors.asked} == set(mirrors.MIRRORS)
+    assert {url for url, _, _ in mirrors.asked} == {mirrors.MIRRORS[0]}
+    assert helper._servers_known == {}
+
+
+def test_helper_downloadBinary_in_ranges_leaves_a_mirror_that_falls_behind(tmp_path, monkeypatch):
+    content = os.urandom(40_000)
+    first, second, third = MirrorsWithRanges.MIRRORS
+    # The second mirror is the fastest in its test and in its first ranges, and then slows down to a
+    # tenth, far under three quarters of what the first mirror, half as fast in its test, would do
+    mirrors = MirrorsWithRanges(
+        monkeypatch,
+        content,
+        bytes_a_second={first: 20_000, second: lambda nth: 40_000 if nth <= 16 else 4_000, third: 5_000},
+    )
+    out = tmp_path / "archive.7z"
+    helper.downloadBinaryFile(mirrors.QT_URL, out, "sha256", hashlib.sha256(content).digest(), (5, 5))
+    assert out.read_bytes() == content
+    # The first mirror, the next best, took over and delivered most of the file
+    assert mirrors.ranges_from(first) > mirrors.ranges_from(second)
+    assert mirrors.asked[-1][0] == first
+    assert mirrors.ranges_from(third) == 1
+    assert helper._servers_known["mirror2.example.com"][0] < helper._servers_known["mirror1.example.com"][0]
+
+
+def test_helper_downloadBinary_in_ranges_leaves_a_mirror_that_goes_silent(tmp_path, monkeypatch):
+    content = os.urandom(10_000)
+    first, second, third = MirrorsWithRanges.MIRRORS
+    mirrors = MirrorsWithRanges(
+        monkeypatch, content, bytes_a_second={first: 20_000, second: 100_000}, silent_mirrors=[second]
+    )
+    out = tmp_path / "archive.7z"
+    helper.downloadBinaryFile(mirrors.QT_URL, out, "sha256", hashlib.sha256(content).digest(), (5, 30))
+    assert out.read_bytes() == content
+    assert mirrors.asked[-1][0] == first
 
 
 def test_helper_downloadBinary_in_ranges_passes_a_broken_mirror_by(tmp_path, monkeypatch):
@@ -496,6 +615,7 @@ def test_helper_downloadBinary_in_ranges_passes_a_broken_mirror_by(tmp_path, mon
     out = tmp_path / "archive.7z"
     helper.downloadBinaryFile(mirrors.QT_URL, out, "sha256", hashlib.sha256(content).digest(), (5, 5))
     assert out.read_bytes() == content
+    assert "mirror2.example.com" not in helper._servers_known
 
 
 def test_helper_downloadBinary_in_ranges_fails_when_no_mirror_delivers(tmp_path, monkeypatch):
@@ -505,7 +625,7 @@ def test_helper_downloadBinary_in_ranges_fails_when_no_mirror_delivers(tmp_path,
         helper.downloadBinaryFile(
             mirrors.QT_URL, tmp_path / "archive.7z", "sha256", hashlib.sha256(content).digest(), (5, 5)
         )
-    assert "none of the mirrors delivered it" in format(e.value)
+    assert "none of the servers delivered it" in format(e.value)
 
 
 def test_helper_downloadBinary_in_ranges_checks_the_checksum(tmp_path, monkeypatch):

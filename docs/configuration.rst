@@ -32,7 +32,7 @@ A file is like as follows:
     max_retries_on_checksum_error: 5
     max_retries_to_retrieve_hash: 5
     max_connections_per_file: 8
-    max_mirrors_per_file: 4
+    max_mirrors_tested: 8
     hash_algorithm: sha256
     INSECURE_NOT_FOR_PRODUCTION_ignore_hash: False
 
@@ -135,20 +135,28 @@ max_retries_on_checksum_error:
     in the case of a checksum error.
 
 max_connections_per_file:
-    ``aqt`` downloads a large archive over several connections at once, each of
-    which fetches one part of the file after another, when the server hands out
-    parts of a file. This is the largest number of connections for one archive;
-    an archive gets one for every 4 MiB of its size, so a small archive is still
-    downloaded over a single connection. Set it to ``1`` to download every
-    archive over a single connection. Default is ``8``.
+    ``aqt`` downloads a large archive over several connections to one server at
+    once, each of which fetches one part of the file after another, when the
+    server hands out parts of a file. This is the largest number of connections
+    for one archive; an archive gets one for every 4 MiB of its size, so a small
+    archive is still downloaded over a single connection. Set it to ``1`` to
+    download every archive over a single connection. Default is ``8``.
 
-max_mirrors_per_file:
+max_mirrors_tested:
     When Qt's server sends a download on to a mirror, it also knows the other
-    mirrors that hold the file. The connections for one large archive are spread
-    over this many of them, the mirror the server chose and the next ones on
-    its list, so no mirror gets them all and a slow or failing one is passed
-    by. The finished archive is checked against the checksum from the
-    ``trusted_mirrors``, as every download is. Default is ``4``.
+    mirrors that hold the file. For an archive large enough that it costs
+    nothing, ``aqt`` first finds the best of them: each connection fetches its
+    first part of the file from a different mirror, the one the server chose
+    and the next ones on its list, this many at most. The mirror with the most
+    bandwidth then serves the rest of the archive alone; of mirrors about as
+    fast as each other, the one that answers soonest. A mirror that slows down
+    well below its own earlier pace, fails, or sends nothing for a few seconds
+    is left for the next best one. What ``aqt`` learns of the mirrors holds for
+    every further archive the same process downloads. The finished archive is
+    checked against the checksum from the ``trusted_mirrors``, as every
+    download is. The same number limits how many mirrors are asked for a file
+    when one answers with an error. Set it to ``1`` to stay with the mirror the
+    server chose. Default is ``8``.
 
 hash_algorithm:
     This is either ``sha256``, ``sha1`` or ``md5``. ``sha256`` is the only safe 

@@ -273,11 +273,11 @@ def downloadBinaryFile(url: str, out: Path, hash_algo: str, exp: Optional[bytes]
             if connections > 1 and r.headers.get("Accept-Ranges", "").lower() == "bytes":
                 # Large enough to be worth several connections, and the server hands out ranges of it
                 r.close()
-                mirrors = [r.url]
+                servers = [r.url]
                 if r.url != url:
                     # Qt's server sent us to a mirror, so it has a list of the others too
-                    mirrors += _other_mirrors(url, r.url)[: Settings.max_mirrors_per_file - 1]
-                _download_in_ranges(mirrors, out, size, connections, timeout)
+                    servers += _other_mirrors(url, r.url)[: Settings.max_mirrors_tested - 1]
+                _download_in_ranges(servers, out, size, connections, timeout)
                 with open(out, "rb") as fd:
                     for chunk in iter(lambda: fd.read(1 << 20), b""):
                         hash.update(chunk)
@@ -310,6 +310,44 @@ def downloadBinaryFile(url: str, out: Path, hash_algo: str, exp: Optional[bytes]
 # line: an archive under some 10 MB gains nothing from more connections, and one of 26 MB comes
 # in 2.1 s where a single connection takes 3.6 s.
 BYTES_PER_RANGE = 4 * 1024 * 1024
+# The first range a connection asks for when the servers are tested. Its second half shows a
+# server's bandwidth; its first half is spent on a new connection's slow start.
+BYTES_PER_TEST = 2 * 1024 * 1024
+# The servers are tested only for a file large enough that the tests are a quarter of it at most
+TESTS_SHARE_OF_FILE = 0.25
+# Two servers count as equally fast when the slower one has this share of the faster one's
+# bandwidth; the one that answers sooner is then the better one
+SHARE_OF_BANDWIDTH_TO_COUNT_AS_EQUAL = 0.9
+# A server that takes longer than this many seconds to answer a request is picked only when all do
+SECONDS_TO_ANSWER_AT_MOST = 1.0
+# A server that sends nothing for this many seconds, in the middle of a range or before its
+# answer begins, is left for the next best one
+SECONDS_OF_SILENCE_AT_MOST = 4.0
+# A server in use is judged by this many of its latest ranges
+RANGES_PER_JUDGEMENT = 8
+# A server in use is left for the next best one once it has slowed down so much that the next
+# best one, going by the tests, would deliver this much more
+SHARE_OF_NEXT_BEST_TO_STAY = 0.75
+# What this process has learned of each server, by its host name: its bandwidth, the bytes a
+# second that one connection to it delivered, and its latency, the seconds it took to answer a
+# request. A later download in the same process starts on the best one at once.
+_servers_known: Dict[str, Tuple[float, float]] = {}
+
+
+def _best_server(servers: List[str], known: Dict[str, Tuple[float, float]]) -> str:
+    """
+    Returns the best of `servers` by what is `known` of them, a bandwidth and a latency each:
+    the one with the most bandwidth, or, among those that count as equally fast as it, the one
+    that answers soonest. A server that takes too long to answer counts only when all of them do.
+    With nothing known of any, returns the first.
+    """
+    tested = [server for server in servers if server in known]
+    if not tested:
+        return servers[0]
+    prompt = [server for server in tested if known[server][1] <= SECONDS_TO_ANSWER_AT_MOST] or tested
+    most = max(known[server][0] for server in prompt)
+    equal = [server for server in prompt if known[server][0] >= SHARE_OF_BANDWIDTH_TO_COUNT_AS_EQUAL * most]
+    return min(equal, key=lambda server: known[server][1])
 
 
 def _other_mirrors(url: str, chosen: str) -> List[str]:
@@ -345,12 +383,12 @@ def _answer_of_another_mirror(
     """
     Qt's server sent the download of `url` on to a mirror, which `refused` it with an error answer,
     such as 404 for a file it has not got yet. Asks the next mirrors of the list Qt's server keeps
-    for the file, at most `max_mirrors_per_file` - 1 of them, and returns the first answer that
+    for the file, at most `max_mirrors_tested` - 1 of them, and returns the first answer that
     delivers the file, or else the last error answer.
     """
     logger = getLogger("aqt.helper")
     answer = refused
-    for mirror in _other_mirrors(url, refused.url)[: Settings.max_mirrors_per_file - 1]:
+    for mirror in _other_mirrors(url, refused.url)[: Settings.max_mirrors_tested - 1]:
         logger.info(
             f"{urlparse(answer.url).hostname} answered {answer.status_code}. Asking {urlparse(mirror).hostname} instead."
         )
@@ -367,57 +405,107 @@ def _answer_of_another_mirror(
 
 def _download_range(
     session: requests.Session, url: str, first: int, last: int, timeout: Tuple[float, float], is_needless: Callable[[], bool]
-) -> Optional[bytes]:
+) -> Optional[Tuple[bytes, float, float]]:
     """
-    Asks `url` for the bytes from `first` to `last` of its file and returns them. Gives up and
-    returns None as soon as `is_needless()` says that nobody waits for these bytes any more.
+    Asks `url` for the bytes from `first` to `last` of its file. Returns them with what the request
+    showed of the server: its bandwidth in bytes a second, and its latency, the seconds until its
+    answer began. Gives up and returns None as soon as `is_needless()` says that nobody waits for
+    these bytes any more.
     """
     headers = {"Range": f"bytes={first}-{last}", "Accept-Encoding": "identity"}
-    with session.get(url, headers=headers, stream=True, timeout=timeout) as r:
+    size = last - first + 1
+    asked = time.monotonic()
+    patience = (timeout[0], min(timeout[1], SECONDS_OF_SILENCE_AT_MOST))
+    with session.get(url, headers=headers, stream=True, timeout=patience) as r:
+        answered = time.monotonic()
         if r.status_code != 206:
             raise ArchiveConnectionError(f"{urlparse(url).hostname} answered a request for a range with {r.status_code}")
         chunks = []
         received = 0
+        halfway: Optional[Tuple[float, int]] = None
         # Small chunks, so that a slow connection notices soon that it may stop
         for chunk in r.iter_content(chunk_size=1 << 16):
             if is_needless():
                 return None
             chunks.append(chunk)
             received += len(chunk)
-        if received != last - first + 1:
-            raise ArchiveConnectionError(f"{urlparse(url).hostname} sent {received} of {last - first + 1} bytes")
-        return b"".join(chunks)
+            if halfway is None and received >= size // 2:
+                halfway = (time.monotonic(), received)
+        ended = time.monotonic()
+        if received != size:
+            raise ArchiveConnectionError(f"{urlparse(url).hostname} sent {received} of {size} bytes")
+        # The second half of the range tells the bandwidth: a new connection starts slowly, and a
+        # range that came in one piece has no second half to time
+        if halfway is not None and received > halfway[1] and ended > halfway[0]:
+            bandwidth = (received - halfway[1]) / (ended - halfway[0])
+        else:
+            bandwidth = received / max(ended - answered, 1e-6)
+        return b"".join(chunks), bandwidth, answered - asked
 
 
-def _download_in_ranges(mirrors: List[str], out: Path, size: int, connections: int, timeout: Tuple[float, float]) -> None:
+def _download_in_ranges(servers: List[str], out: Path, size: int, connections: int, timeout: Tuple[float, float]) -> None:
     """
-    Downloads a file of `size` bytes into `out` over several connections at once.
+    Downloads a file of `size` bytes into `out` over several connections to the best of `servers`.
 
     The file is cut into ranges. Each connection takes the next range that nobody has started, asks
-    its mirror for those bytes and hands them over to be written at their place in `out`; so a fast
-    connection fetches more of the file than a slow one. The connections take the `mirrors` in turn.
+    the server for those bytes and hands them over to be written at their place in `out`.
+
+    Which server is best is found out first, for a file large enough, unless this process knows it
+    from an earlier download: every connection fetches its first range, a smaller one, from a
+    different server, all at once. That shows each server's bandwidth, the bytes a second it
+    delivers, and its latency, the time it takes to answer. From then on every connection uses the
+    best server alone: the one with the most bandwidth, or the one that answers soonest among
+    those about as fast (`_best_server()`). The tests cost no extra time or bytes, since their
+    ranges are parts of the file. Without a test, the first server is used, which Qt's server chose.
+
+    While a server is in use, its pace is watched: what its first ranges delivered to each
+    connection is compared with what its latest ranges do. Several connections share a server's
+    bandwidth, so a server in use cannot be held against another one's test, which had it alone;
+    it is held against itself. Once it has slowed down so much that the next best server, going
+    by the tests, would deliver a third more, the connections move over to that server, and the
+    one left is not returned to during this download. A server that fails, or sends nothing for
+    a few seconds, is left the same way.
+    When no server is left, the download fails with ArchiveConnectionError.
 
     Once every range is started, a connection with nothing left to do takes the range that has been
     under way for the longest, beside the connection that has it, and the first to deliver it wins.
     The download ends when the last range is written, without waiting for a connection that is
-    still busy: such a one only holds a network connection, and ends by itself. So a slow or
-    stalled mirror cannot hold up the end of the download.
-
-    A mirror that fails is used no more: the connection asks the next mirror for the same range.
-    When no mirror is left, the download fails with ArchiveConnectionError.
+    still busy: such a one only holds a network connection, and ends by itself. So a slow test or a
+    stalled connection cannot hold up the end of the download.
 
     The caller checks the finished file against its checksum, as for any download.
     """
     logger = getLogger("aqt.helper")
     Range = Tuple[int, int]
-    waiting: Deque[Range] = deque(
-        (first, min(first + BYTES_PER_RANGE, size) - 1) for first in range(0, size, BYTES_PER_RANGE)
-    )
+
+    def host(server: str) -> str:
+        return urlparse(server).netloc
+
+    def megabytes(bandwidth: float) -> str:
+        return f"{bandwidth / 1e6:.1f} MB/s"
+
+    known: Dict[str, Tuple[float, float]] = {
+        server: _servers_known[host(server)] for server in servers if host(server) in _servers_known
+    }
+    tested: List[str] = []
+    if not known and len(servers) > 1:
+        candidates = servers[:connections]
+        if len(candidates) * BYTES_PER_TEST <= TESTS_SHARE_OF_FILE * size:
+            tested = candidates
+    waiting: Deque[Range] = deque()
+    position = 0
+    while position < size:
+        length = BYTES_PER_TEST if len(waiting) < len(tested) else BYTES_PER_RANGE
+        waiting.append((position, min(position + length, size) - 1))
+        position += length
     total = len(waiting)
     started: Dict[Range, float] = {}
     shared: Set[Range] = set()
     fetched: Set[Range] = set()
-    failed: Set[str] = set()
+    left: Set[str] = set()
+    delivered: Dict[str, int] = {}
+    judged: List[str] = []
+    paces: List[float] = []
     lock = Lock()
     finished = Event()
     # What the connections hand over: a range with its bytes, an error, or None when a connection ends
@@ -436,32 +524,91 @@ def _download_in_ranges(mirrors: List[str], out: Path, size: int, connections: i
             shared.add(taken)
             return taken
 
-    def fetch(session: requests.Session, number: int, taken: Range) -> Optional[bytes]:
+    def best() -> str:
+        with lock:
+            remaining = [server for server in servers if server not in left]
+            if not remaining:
+                hostnames = [host(server) for server in servers]
+                raise ArchiveConnectionError(f"Failed to download {out.name}: none of the servers delivered it: {hostnames}")
+            return _best_server(remaining, known)
+
+    def leave(server: str, reason: str) -> None:
+        with lock:
+            if server not in left:
+                left.add(server)
+                logger.debug(f"{host(server)} is used no more for {out.name}: {reason}")
+
+    def learn(server: str, bandwidth: float, latency: float, is_test: bool, is_warm: bool) -> None:
+        """Takes in what one range showed of `server`, and leaves the server when it has fallen behind."""
+        with lock:
+            if is_test:
+                known[server] = _servers_known[host(server)] = (bandwidth, latency)
+                logger.debug(
+                    f"{host(server)}: {megabytes(bandwidth)} for one connection, answers in {latency * 1000:.0f} ms"
+                )
+                return
+            # Only a range from a connection that was open already says how the server does in use
+            if not is_warm or server in left or server not in known:
+                return
+            if judged != [server]:
+                judged[:] = [server]
+                paces.clear()
+            paces.append(bandwidth)
+            others = [other for other in servers if other != server and other not in left and other in known]
+            if len(paces) < 2 * RANGES_PER_JUDGEMENT or not others:
+                return
+
+            def middle(values: List[float]) -> float:
+                return sorted(values)[len(values) // 2]
+
+            at_first, lately = middle(paces[:RANGES_PER_JUDGEMENT]), middle(paces[-RANGES_PER_JUDGEMENT:])
+            next_best = _best_server(others, known)
+            # What the next best server would deliver here, if the two compare in use as they did in their tests
+            expected_of_next_best = at_first * min(1.0, known[next_best][0] / known[server][0])
+            if lately < SHARE_OF_NEXT_BEST_TO_STAY * expected_of_next_best:
+                left.add(server)
+                known[server] = _servers_known[host(server)] = (known[server][0] * lately / at_first, known[server][1])
+                logger.info(
+                    f"{host(server)} slowed down from {megabytes(at_first)} to {megabytes(lately)} for each connection; "
+                    f"going on with {host(next_best)}"
+                )
+
+    def fetch(session: requests.Session, taken: Range, test_server: Optional[str], used: Set[str]) -> Optional[bytes]:
         def is_needless() -> bool:
             return finished.is_set() or taken in fetched
 
-        turn = number % len(mirrors)
-        for mirror in mirrors[turn:] + mirrors[:turn]:
-            if mirror in failed:
-                continue
+        server = test_server
+        while True:
+            if server is None or server in left:
+                server = best()
             try:
-                return _download_range(session, mirror, taken[0], taken[1], timeout, is_needless)
+                answer = _download_range(session, server, taken[0], taken[1], timeout, is_needless)
             except (requests.exceptions.RequestException, ArchiveConnectionError) as e:
                 if is_needless():
                     return None
-                failed.add(mirror)
-                logger.debug(f"Mirror {urlparse(mirror).hostname} is used no more for {out.name}: {e}")
-        hostnames = [urlparse(mirror).hostname for mirror in mirrors]
-        raise ArchiveConnectionError(f"Failed to download {out.name}: none of the mirrors delivered it: {hostnames}")
+                leave(server, str(e))
+                server = None
+                continue
+            if answer is None:
+                return None
+            data, bandwidth, latency = answer
+            learn(server, bandwidth, latency, is_test=server == test_server, is_warm=server in used)
+            used.add(server)
+            with lock:
+                delivered[server] = delivered.get(server, 0) + len(data)
+            return data
 
     def connection(number: int) -> None:
         try:
+            test_server = tested[number] if number < len(tested) else None
+            used: Set[str] = set()
             with requests.Session() as session:
                 while not finished.is_set():
                     taken = next_range()
                     if taken is None:
                         return
-                    data = fetch(session, number, taken)
+                    data = fetch(session, taken, test_server, used)
+                    test_server = None
                     if data is not None:
                         with lock:
                             fetched.add(taken)
@@ -471,7 +618,7 @@ def _download_in_ranges(mirrors: List[str], out: Path, size: int, connections: i
         finally:
             handed_over.put(None)
 
-    logger.debug(f"Downloading {out.name} over {connections} connections to {[urlparse(m).hostname for m in mirrors]}")
+    logger.debug(f"Downloading {out.name} over {connections} connections; servers: {[host(server) for server in servers]}")
     # Daemon threads, since the download does not wait for a connection that is still busy at its end
     for number in range(connections):
         Thread(target=connection, args=(number,), daemon=True).start()
@@ -493,11 +640,15 @@ def _download_in_ranges(mirrors: List[str], out: Path, size: int, connections: i
     finally:
         finished.set()
     if len(written) != total:
-        # A full disk or another error of this machine counts before a mirror's
+        # A full disk or another error of this machine counts before a server's
         own_errors = [error for error in errors if not isinstance(error, ArchiveConnectionError)]
         if own_errors or errors:
             raise (own_errors or errors)[0]
         raise ArchiveConnectionError(f"Failed to download {out.name}: {total - len(written)} ranges are missing")
+    with lock:
+        most = max(delivered, key=lambda server: delivered[server])
+        share = 100 * delivered[most] // max(sum(delivered.values()), 1)
+    logger.info(f"Downloaded {out.name} over {connections} connections, {share}% of it from {host(most)}")
 
 
 def retry_on_errors(action: Callable[[], Any], acceptable_errors: Tuple, num_retries: int, name: str) -> Any:
@@ -853,8 +1004,8 @@ class SettingsClass:
         return self.config.getint("requests", "max_connections_per_file", fallback=8)
 
     @property
-    def max_mirrors_per_file(self):
-        return self.config.getint("requests", "max_mirrors_per_file", fallback=4)
+    def max_mirrors_tested(self):
+        return self.config.getint("requests", "max_mirrors_tested", fallback=8)
 
     @property
     def max_retries_to_retrieve_hash(self):
