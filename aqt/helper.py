@@ -258,9 +258,11 @@ def downloadBinaryFile(url: str, out: Path, hash_algo: str, exp: Optional[bytes]
         except requests.exceptions.Timeout as e:
             raise ArchiveConnectionError(f"Connection timeout: {e.args}") from e
         else:
+            if r.status_code != 200 and r.url != url:
+                r = _answer_of_another_mirror(session, url, r, timeout)
             if r.status_code != 200:
                 # An error page is no archive: saving it would only fail the checksum later.
-                # The server did not deliver, so the caller may try another one.
+                # No server delivered, so the caller may try a fallback one.
                 raise ArchiveConnectionError(
                     f"Failed to download {filename} from {urlparse(r.url).hostname}\n"
                     f"Server response code: {r.status_code}, reason: {r.reason}"
@@ -332,6 +334,32 @@ def _other_mirrors(url: str, chosen: str) -> List[str]:
         and urlparse(mirror).scheme == scheme
         and not any(mirror.startswith(b) for b in Settings.blacklist)
     ]
+
+
+def _answer_of_another_mirror(
+    session: requests.Session, url: str, refused: requests.Response, timeout: Tuple[float, float]
+) -> requests.Response:
+    """
+    Qt's server sent the download of `url` on to a mirror, which `refused` it with an error answer,
+    such as 404 for a file it has not got yet. Asks the next mirrors of the list Qt's server keeps
+    for the file, at most `max_mirrors_per_file` - 1 of them, and returns the first answer that
+    delivers the file, or else the last error answer.
+    """
+    logger = getLogger("aqt.helper")
+    answer = refused
+    for mirror in _other_mirrors(url, refused.url)[: Settings.max_mirrors_per_file - 1]:
+        logger.info(
+            f"{urlparse(answer.url).hostname} answered {answer.status_code}. Asking {urlparse(mirror).hostname} instead."
+        )
+        try:
+            attempt = session.get(mirror, stream=True, timeout=timeout)
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+            continue
+        answer.close()
+        answer = attempt
+        if answer.status_code == 200:
+            break
+    return answer
 
 
 def _download_range(

@@ -412,9 +412,13 @@ class MirrorsWithRanges:
   </file>
 </metalink>""".format(*MIRRORS)
 
-    def __init__(self, monkeypatch, content: bytes, broken_mirrors=(), accept_ranges="bytes", answer_once_asked_by=0):
+    def __init__(
+        self, monkeypatch, content: bytes, broken_mirrors=(), accept_ranges="bytes", answer_once_asked_by=0, without_file=()
+    ):
         self.content = content
         self.broken_mirrors = broken_mirrors
+        self.without_file = without_file
+        self.asked_for_file = []
         self.accept_ranges = accept_ranges
         self.asked = []
         # No range is answered before this many connections have asked for one, so that a test
@@ -446,6 +450,9 @@ class MirrorsWithRanges:
             if url == mirrors.QT_URL:
                 return Answer(url, 302, {"Location": mirrors.MIRRORS[0]})
             if wanted is None:
+                mirrors.asked_for_file.append(url)
+                if url in mirrors.without_file:
+                    return Answer(url, 404, {})
                 headers = {"Content-Length": str(len(mirrors.content)), "Accept-Ranges": mirrors.accept_ranges}
                 return Answer(url, 200, headers, mirrors.content)
             first, last = (int(number) for number in wanted[len("bytes=") :].split("-"))
@@ -542,6 +549,28 @@ def test_helper_downloadBinary_connection_breaks_in_the_middle(tmp_path, monkeyp
     with pytest.raises(ArchiveConnectionError) as e:
         helper.downloadBinaryFile("http://example.com/test.xml", tmp_path / "text.xml", "md5", bytes(16), 60)
     assert format(e.value).startswith("Connection to example.com broke: Connection broken")
+
+
+def test_helper_downloadBinary_asks_the_next_mirrors_for_a_file_one_has_not_got(tmp_path, monkeypatch):
+    content = os.urandom(500)
+    mirrors = MirrorsWithRanges(monkeypatch, content, without_file=MirrorsWithRanges.MIRRORS[:2])
+    out = tmp_path / "archive.7z"
+    helper.downloadBinaryFile(mirrors.QT_URL, out, "sha256", hashlib.sha256(content).digest(), (5, 5))
+    assert out.read_bytes() == content
+    assert mirrors.asked_for_file == mirrors.MIRRORS
+
+
+def test_helper_downloadBinary_gives_up_when_no_mirror_has_the_file(tmp_path, monkeypatch):
+    mirrors = MirrorsWithRanges(monkeypatch, os.urandom(500), without_file=MirrorsWithRanges.MIRRORS)
+    out = tmp_path / "archive.7z"
+    with pytest.raises(ArchiveConnectionError) as e:
+        helper.downloadBinaryFile(mirrors.QT_URL, out, "sha256", bytes(32), (5, 5))
+    assert (
+        format(e.value)
+        == "Failed to download archive.7z from mirror3.example.com\nServer response code: 404, reason: a reason"
+    )
+    assert mirrors.asked_for_file == mirrors.MIRRORS
+    assert not out.exists()
 
 
 def test_helper_downloadBinary_response_error_undefined(tmp_path, monkeypatch):
