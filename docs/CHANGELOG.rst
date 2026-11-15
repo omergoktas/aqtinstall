@@ -13,7 +13,7 @@ All notable changes to this project will be documented in this file.
 `Unreleased`_
 =============
 
-v4.1.0 (not released yet)
+`v4.1.0`_ (15, Nov. 2026)
 =========================
 
 Added
@@ -574,7 +574,8 @@ Security
 * Check Update.xml file with SHA256 hash (#493)
 
 
-.. _Unreleased: https://github.com/omergoktas/aqtinstall/compare/v4.0.0...HEAD
+.. _Unreleased: https://github.com/omergoktas/aqtinstall/compare/v4.1.0...HEAD
+.. _v4.1.0: https://github.com/omergoktas/aqtinstall/compare/v4.0.0...v4.1.0
 .. _v4.0.0: https://github.com/omergoktas/aqtinstall/compare/v3.3.0...v4.0.0
 .. _v3.3.0: https://github.com/miurahr/aqtinstall/compare/v3.2.1...v3.3.0
 .. _v3.2.1: https://github.com/miurahr/aqtinstall/compare/v3.2.0...v3.2.1
