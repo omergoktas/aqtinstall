@@ -525,7 +525,7 @@ install-qt command
         [--noarchives]
         [--dry-run]
         [--use-official-installer [<email> <password>]]
-        <host> <target> (<Qt version> | <spec>) [<arch>]
+        (<host> <target> (<Qt version> | <spec>) [<arch>] | <folder> <target> <Qt version>)
 
 Install Qt library, with specified version and target.
 There are various combinations to accept according to Qt version.
@@ -533,6 +533,30 @@ There are various combinations to accept according to Qt version.
 .. describe:: host
 
     linux, linux_arm64, windows, windows_arm64, all_os, or mac. The operating system on which the Qt development tools will run.
+
+.. describe:: folder
+
+    The folder the Qt build goes into under the version's folder, such as ``gcc_arm64``,
+    ``macos``, ``msvc2022_64``, ``llvm-mingw_64``, ``android_arm64_v8a`` or ``ios_device``,
+    in place of the host and the architecture. These are the names that Qt's own installer
+    gives the folders, and that ``list-installed`` prints. aqt finds the host and the
+    architecture that Qt's repository keeps the build under, which differ from one Qt version
+    to the next: ``gcc_64`` is ``linux`` ``linux_gcc_64`` from Qt 6.7 on and ``linux``
+    ``gcc_64`` before it, and an Android build lies under ``all_os`` from Qt 6.7 on and under
+    this machine's own host before it. Qt 6.8 and later have two builds that go into
+    ``msvc2022_arm64``: the native one under ``windows_arm64``, and one cross compiled under
+    ``windows``; the folder names the native one, and the other is installed by its host and
+    architecture.
+
+    A folder belongs to one version of Qt, so the version must be given in full, not as a
+    `SimpleSpec`_, and the target must be the one the build is for. A host name is never a
+    folder name, so aqt tells the two apart by the name alone. For example, these two commands
+    install the same build:
+
+    .. code-block:: console
+
+        $ aqt install-qt gcc_arm64 desktop 6.12.0 -m qtimageformats
+        $ aqt install-qt linux_arm64 desktop 6.12.0 linux_gcc_arm64 -m qtimageformats
 
 .. describe:: target
 
@@ -561,7 +585,8 @@ There are various combinations to accept according to Qt version.
 
 .. describe:: arch
 
-   The compiler architecture for which you are developing. Options:
+   The compiler architecture for which you are developing. It is left out when a folder is
+   given in place of the host. Options:
 
    * gcc_64 or linux_gcc_64 for linux desktop
 
@@ -634,10 +659,13 @@ uninstall-qt command
         [-h | --help]
         [-O | --outputdir <directory>]
         [-m | --modules <module> [<module>...]]
-        <host> <target> <Qt version> [<arch>]
+        (<host> <target> <Qt version> [<arch>] | <folder> <target> <Qt version>)
 
 Remove a Qt that aqt installed, or only some of its add-on modules. The host, target,
-version and architecture are the ones the Qt was installed with.
+version and architecture are the ones the Qt was installed with. In place of the host and
+the architecture, the Qt's folder may be given, as ``list-installed`` prints it after the
+version, such as ``gcc_arm64`` for ``6.12.0/gcc_arm64``, and as the :ref:`install-qt
+command <qt installation command>` describes it.
 
 .. option:: --modules, -m <module> [<module>...]
 
@@ -657,6 +685,7 @@ Qt's own installer, is refused. Nothing is asked of a server.
 
     $ aqt install-qt linux desktop 6.12.0 linux_gcc_64 -m qtmultimedia qtshadertools -O ~/Qt
     $ aqt uninstall-qt linux desktop 6.12.0 linux_gcc_64 -m qtmultimedia -O ~/Qt
+    $ aqt uninstall-qt gcc_64 desktop 6.12.0 -O ~/Qt
 
 
 .. _list-installed command:

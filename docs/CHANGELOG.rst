@@ -13,6 +13,15 @@ All notable changes to this project will be documented in this file.
 `Unreleased`_
 =============
 
+v4.1.0 (not released yet)
+=========================
+
+Added
+-----
+- ``install-qt`` and ``uninstall-qt`` accept the folder of a Qt build, such as ``gcc_arm64``,
+  in place of the host and the architecture, so a folder that ``list-installed`` prints can be
+  removed by its name
+
 `v4.0.0`_ (15, Nov. 2026)
 =========================
 

@@ -184,6 +184,10 @@ class Cli:
 
     UNHANDLED_EXCEPTION_CODE = 254
 
+    # The hosts that Qt's repository keeps builds under. No folder that a Qt build is installed
+    # into has one of these names, so install-qt and uninstall-qt tell the two apart by them.
+    HOSTS = ["linux", "linux_arm64", "mac", "windows", "windows_arm64", "all_os"]
+
     def __init__(self) -> None:
         parser = argparse.ArgumentParser(
             prog="aqt",
@@ -293,6 +297,37 @@ class Cli:
             return "win64_msvc2022_arm64"
         raise CliInputError("Please supply a target architecture.", should_show_help=True)
 
+    @staticmethod
+    def _host_and_arch(
+        host_or_folder: str, target: str, qt_version_or_spec: str, arch: Optional[str]
+    ) -> Tuple[str, Optional[str]]:
+        """Returns the host and the architecture that install-qt and uninstall-qt work with. Their
+        first argument is either a host, which comes back with the architecture as given, or the
+        folder that a Qt build is installed into, such as gcc_arm64, which names both."""
+        if host_or_folder in Cli.HOSTS:
+            return host_or_folder, arch
+        folder = host_or_folder
+        if arch:
+            raise CliInputError(
+                f"The Qt folder '{folder}' names the architecture already. "
+                f"Leave out '{arch}', or give a host in place of the folder."
+            )
+        try:
+            version = Version(qt_version_or_spec)
+        except ValueError as e:
+            raise CliInputError(
+                f"A Qt folder belongs to one version of Qt, so give the version in full, "
+                f"such as 6.12.0, in place of '{qt_version_or_spec}'."
+            ) from e
+        # A build that the repository keeps under each host is taken from this machine's own
+        names = QtRepoProperty.get_host_and_arch(target, folder, version, Cli._get_effective_os_name("all_os"))
+        if names is None:
+            raise CliInputError(
+                f"'{folder}' is neither a host ({', '.join(Cli.HOSTS)}) "
+                f"nor the folder of a Qt {version} build for the target {target}."
+            )
+        return names
+
     def _check_mirror(self, mirror):
         if mirror is None:
             pass
@@ -360,10 +395,10 @@ class Cli:
         start_time = time.perf_counter()
         self.show_aqt_version()
         target: str = args.target
-        os_name: str = args.host
-        effective_os_name: str = Cli._get_effective_os_name(os_name)
         qt_version_or_spec: str = getattr(args, "qt_version", getattr(args, "qt_version_spec", ""))
-        arch: str = self._set_arch(args.arch, os_name, target, qt_version_or_spec)
+        os_name, given_arch = Cli._host_and_arch(args.host, target, qt_version_or_spec, args.arch)
+        effective_os_name: str = Cli._get_effective_os_name(os_name)
+        arch: str = self._set_arch(given_arch, os_name, target, qt_version_or_spec)
         keep: bool = args.keep or Settings.always_keep_archives
         archive_dest: Optional[str] = args.archive_dest
         dry_run: bool = args.dry_run
@@ -394,7 +429,7 @@ class Cli:
             Cli._validate_version_str(qt_version)
 
         if qt_version != qt_version_or_spec:
-            arch = self._set_arch(args.arch, os_name, target, qt_version)
+            arch = self._set_arch(given_arch, os_name, target, qt_version)
 
         if hasattr(args, "use_official_installer") and args.use_official_installer is not None:
             if len(args.use_official_installer) not in [0, 2]:
@@ -409,9 +444,7 @@ class Cli:
 
             # Core parameters required by install-qt-official
             commercial_args.target = args.target
-            commercial_args.arch = self._set_arch(
-                args.arch, args.host, args.target, getattr(args, "qt_version", getattr(args, "qt_version_spec", ""))
-            )
+            commercial_args.arch = self._set_arch(given_arch, os_name, args.target, qt_version_or_spec)
 
             commercial_args.version = qt_version
 
@@ -892,10 +925,11 @@ class Cli:
         add-on modules named."""
         self.show_aqt_version()
         Cli._validate_version_str(args.qt_version)
-        arch = self._set_arch(args.arch, args.host, args.target, args.qt_version)
+        host, given_arch = Cli._host_and_arch(args.host, args.target, args.qt_version, args.arch)
+        arch = self._set_arch(given_arch, host, args.target, args.qt_version)
         if not arch:
             raise CliInputError("Please supply a target architecture.", should_show_help=True)
-        qt_folder = Cli._qt_folder(Cli._get_effective_os_name(args.host), arch, Version(args.qt_version))
+        qt_folder = Cli._qt_folder(Cli._get_effective_os_name(host), arch, Version(args.qt_version))
         uninstall_qt(args.outputdir or os.getcwd(), qt_folder, args.modules)
 
     def run_list_installed(self, args: InstallArgParser) -> None:
@@ -919,8 +953,9 @@ class Cli:
         uninstall_qt_parser.set_defaults(func=self.run_uninstall_qt)
         uninstall_qt_parser.add_argument(
             "host",
-            choices=["linux", "linux_arm64", "mac", "windows", "windows_arm64", "all_os"],
-            help="host os name",
+            metavar="(HOST | FOLDER)",
+            help=f"host os name: {', '.join(Cli.HOSTS)}; or the folder of the Qt build, such as gcc_arm64, "
+            "as list-installed prints it, in place of the host and the architecture",
         )
         uninstall_qt_parser.add_argument(
             "target",
@@ -929,7 +964,9 @@ class Cli:
         )
         uninstall_qt_parser.add_argument("qt_version", metavar="VERSION", help='Qt version in the format of "6.X.Y"')
         uninstall_qt_parser.add_argument(
-            "arch", nargs="?", help="The architecture the Qt was installed with, such as linux_gcc_64"
+            "arch",
+            nargs="?",
+            help="The architecture the Qt was installed with, such as linux_gcc_64; left out when a folder is given",
         )
         uninstall_qt_parser.add_argument(
             "-O", "--outputdir", nargs="?", help="The output directory the Qt was installed into (default current directory)"
@@ -951,8 +988,11 @@ class Cli:
         install_qt_parser.set_defaults(func=self.run_install_qt)
         install_qt_parser.add_argument(
             "host",
-            choices=["linux", "linux_arm64", "mac", "windows", "windows_arm64", "all_os"],
-            help="host os name",
+            metavar="(HOST | FOLDER)",
+            help=f"host os name: {', '.join(Cli.HOSTS)}"
+            "\nor the folder the Qt build goes into, such as gcc_arm64, macos, msvc2022_64,"
+            "\nandroid_arm64_v8a or ios_device, in place of the host and the architecture;"
+            "\nthe version must then be given in full",
         )
         install_qt_parser.add_argument(
             "target",
@@ -967,7 +1007,8 @@ class Cli:
         install_qt_parser.add_argument(
             "arch",
             nargs="?",
-            help="\ntarget linux/desktop: linux_gcc_64, gcc_64, wasm_32"
+            help="left out when a folder is given in place of the host"
+            "\ntarget linux/desktop: linux_gcc_64, gcc_64, wasm_32"
             "\ntarget mac/desktop:   clang_64, wasm_32"
             "\ntarget mac/ios:       ios (<6.12), ios_device, ios_simulator_arm64, ios_simulator_x86_64 (6.12+)"
             "\nwindows/desktop:      win64_msvc2022_64"

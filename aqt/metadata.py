@@ -510,6 +510,58 @@ class QtRepoProperty:
             return arch
 
     @staticmethod
+    def get_host_and_arch(target: str, dir_name: str, version: Version, own_host: str) -> Optional[Tuple[str, str]]:
+        """
+        Returns the host and the architecture that Qt's repository names a build by, for the folder
+        the build is installed into: ("linux_arm64", "linux_gcc_arm64") for gcc_arm64, for example.
+        This is the inverse of get_arch_dir_name(). It returns None for a folder that no build of the
+        target and version is installed into.
+
+        own_host, which is linux, mac or windows, is the host of a build that the repository keeps a
+        copy of under each host, as it did with Android before Qt 6.7 and with WASM for the desktop.
+        """
+        host: Optional[str] = None
+        arch = dir_name
+        if target == "desktop":
+            msvc = re.fullmatch(r"msvc\d{4}(?P<bits>_64|_arm64|)", dir_name)
+            mingw = re.fullmatch(r"(?P<llvm>llvm-)?(?P<mingw>mingw\d*)_(?P<bits>32|64)", dir_name)
+            if dir_name == "gcc_64":
+                host, arch = "linux", ("linux_gcc_64" if version >= Version("6.7.0") else "gcc_64")
+            elif dir_name == "gcc_arm64":
+                host, arch = "linux_arm64", "linux_gcc_arm64"
+            elif dir_name in ("macos", "clang_64"):
+                host, arch = "mac", "clang_64"
+            elif mingw and mingw.group("llvm"):
+                host, arch = "windows", f"win{mingw.group('bits')}_llvm_{mingw.group('mingw')}"
+            elif mingw:
+                host, arch = "windows", f"win{mingw.group('bits')}_{mingw.group('mingw')}"
+            elif msvc and msvc.group("bits") == "_arm64":
+                # Qt 6.8 moved the ARM64 build to a host of its own, and keeps a build cross compiled
+                # on an x64 machine in the same folder, under the windows host
+                host, arch = ("windows_arm64" if version >= Version("6.8.0") else "windows"), f"win64_{dir_name}"
+            elif msvc:
+                host, arch = "windows", f"win{'64' if msvc.group('bits') else '32'}_{dir_name}"
+            elif dir_name.startswith("wasm_"):
+                host = own_host
+        elif target == "winrt":
+            winrt = re.fullmatch(r"winrt_(?P<winrt>x\d{2})_(?P<msvc>msvc\d{4})", dir_name)
+            if winrt:
+                host, arch = "windows", f"win64_{winrt.group('msvc')}_winrt_{winrt.group('winrt')}"
+            elif re.fullmatch(r"msvc\d{4}_winrt_\w+", dir_name):
+                host, arch = "windows", f"win64_{dir_name}"
+        elif target == "android" and (dir_name == "android" or dir_name.startswith("android_")):
+            host = "all_os" if version >= Version("6.7.0") else own_host
+        elif target == "ios" and (dir_name == "ios" or dir_name.startswith("ios_")):
+            host = "mac"
+        elif target == "wasm" and dir_name.startswith("wasm_"):
+            host = "all_os"
+        # A folder that the names found do not lead back to belongs to no build of this version,
+        # such as clang_64 for a Qt that installs into macos
+        if host is None or QtRepoProperty.get_arch_dir_name(host, arch, version) != dir_name:
+            return None
+        return host, arch
+
+    @staticmethod
     def default_linux_desktop_arch_dir() -> Tuple[str, str]:
         return ("gcc_64", "gcc_arm64")
 

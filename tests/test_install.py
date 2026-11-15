@@ -2394,6 +2394,24 @@ def test_cli_lists_and_uninstalls(monkeypatch, tmp_path, capsys):
     assert capsys.readouterr().out == ""
 
 
+def test_cli_uninstalls_by_the_folder_it_lists(monkeypatch, tmp_path, capsys):
+    qt = install_qt_with_a_module(monkeypatch, tmp_path)
+    out = str(tmp_path / "out")
+    cli = Cli()
+    cli._setup_settings()
+    assert cli.run(["list-installed", "--outputdir", out]) == 0
+    assert capsys.readouterr().out == "6.9.9/gcc_64 qtextra\n"
+    # The folder that list-installed prints takes the place of the host and the architecture
+    assert cli.run(["uninstall-qt", "gcc_64", "desktop", "6.9.9", "--outputdir", out, "-m", "qtextra"]) == 0
+    assert not (qt / "lib" / "libextra").exists()
+    assert (qt / "bin" / "tool").exists()
+    assert cli.run(["uninstall-qt", "gcc_64", "desktop", "6.9.9", "--outputdir", out]) == 0
+    assert not qt.exists()
+    capsys.readouterr()
+    assert cli.run(["list-installed", "--outputdir", out]) == 0
+    assert capsys.readouterr().out == ""
+
+
 def test_cli_lists_no_build_whose_qt_itself_has_no_record(monkeypatch, tmp_path, capsys):
     # A module alone, as --noarchives installs it, or as a run leaves it that was cut off early
     install_archive(monkeypatch, tmp_path, "qtextra", {"6.9.9/gcc_64/lib/libextra": b"extra"}, module="qtextra")

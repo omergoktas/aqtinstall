@@ -499,3 +499,95 @@ def test_get_autodesktop_dir_and_arch_non_android(
             )
         elif expect["instruct"]:
             assert any("You can install" in line for line in err_lines), "Expected install instruction message."
+
+
+@pytest.mark.parametrize(
+    "folder, target, expected",
+    (
+        ("macos", "desktop", ("mac", "desktop", "clang_64")),
+        ("gcc_64", "desktop", ("linux", "desktop", "linux_gcc_64")),
+        ("gcc_arm64", "desktop", ("linux_arm64", "desktop", "linux_gcc_arm64")),
+        ("msvc2022_64", "desktop", ("windows", "desktop", "win64_msvc2022_64")),
+        ("msvc2022_arm64", "desktop", ("windows_arm64", "desktop", "win64_msvc2022_arm64")),
+        ("mingw_64", "desktop", ("windows", "desktop", "win64_mingw")),
+        ("llvm-mingw_64", "desktop", ("windows", "desktop", "win64_llvm_mingw")),
+        ("android_arm64_v8a", "android", ("all_os", "android", "android_arm64_v8a")),
+        ("android_armv7", "android", ("all_os", "android", "android_armv7")),
+        ("android_x86_64", "android", ("all_os", "android", "android_x86_64")),
+        ("android_x86", "android", ("all_os", "android", "android_x86")),
+        ("ios_device", "ios", ("mac", "ios", "ios_device")),
+        ("ios_simulator_arm64", "ios", ("mac", "ios", "ios_simulator_arm64")),
+    ),
+)
+def test_cli_install_qt_by_folder(monkeypatch, capsys, folder: str, target: str, expected):
+    # The repository is asked for the build by its host and architecture, as the old form names them
+    asked = []
+
+    def stop(os_name, target, version, arch, **kwargs):
+        asked.append((os_name, target, arch))
+        raise CliInputError("stopped before downloading")
+
+    monkeypatch.setattr("aqt.installer.QtArchives", stop)
+    # On Windows, the desktop Qt that a mobile Qt needs is looked up on a server
+    monkeypatch.setattr(Cli, "_get_autodesktop_dir_and_arch", lambda *args: (None, None))
+    cli = Cli()
+    cli._setup_settings()
+    assert cli.run(["install-qt", folder, target, "6.12.0", "-m", "qtimageformats"]) == 1
+    assert asked == [expected]
+    assert capsys.readouterr()[1].rstrip().endswith("stopped before downloading")
+    # The old form asks for the same
+    assert cli.run(["install-qt", expected[0], target, "6.12.0", expected[2]]) == 1
+    assert asked == [expected, expected]
+
+
+@pytest.mark.parametrize(
+    "cmd, expect_msg",
+    (
+        (
+            "install-qt gcc_arm64 desktop 6.12.0 linux_gcc_arm64",
+            "The Qt folder 'gcc_arm64' names the architecture already. "
+            "Leave out 'linux_gcc_arm64', or give a host in place of the folder.",
+        ),
+        (
+            "uninstall-qt gcc_arm64 desktop 6.12.0 linux_gcc_arm64",
+            "The Qt folder 'gcc_arm64' names the architecture already. "
+            "Leave out 'linux_gcc_arm64', or give a host in place of the folder.",
+        ),
+        (
+            "install-qt gcc_arm64 desktop 6.12",
+            "A Qt folder belongs to one version of Qt, so give the version in full, such as 6.12.0, in place of '6.12'.",
+        ),
+        (
+            "install-qt gcc_arm64 android 6.12.0",
+            "'gcc_arm64' is neither a host (linux, linux_arm64, mac, windows, windows_arm64, all_os) "
+            "nor the folder of a Qt 6.12.0 build for the target android.",
+        ),
+        (
+            "uninstall-qt android_x86 desktop 6.12.0",
+            "'android_x86' is neither a host (linux, linux_arm64, mac, windows, windows_arm64, all_os) "
+            "nor the folder of a Qt 6.12.0 build for the target desktop.",
+        ),
+        (
+            "install-qt ios desktop 6.12.0",
+            "'ios' is neither a host (linux, linux_arm64, mac, windows, windows_arm64, all_os) "
+            "nor the folder of a Qt 6.12.0 build for the target desktop.",
+        ),
+        (
+            "install-qt clang_64 desktop 6.12.0",
+            "'clang_64' is neither a host (linux, linux_arm64, mac, windows, windows_arm64, all_os) "
+            "nor the folder of a Qt 6.12.0 build for the target desktop.",
+        ),
+        (
+            "install-qt lnux desktop 6.12.0",
+            "'lnux' is neither a host (linux, linux_arm64, mac, windows, windows_arm64, all_os) "
+            "nor the folder of a Qt 6.12.0 build for the target desktop.",
+        ),
+    ),
+)
+def test_cli_folder_errors(capsys, cmd: str, expect_msg: str):
+    cli = Cli()
+    cli._setup_settings()
+    assert cli.run(cmd.split()) == 1
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err.rstrip().endswith(expect_msg)
