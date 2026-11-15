@@ -398,10 +398,14 @@ def test_helper_downloadBinary_error_page(tmp_path, monkeypatch):
     assert not out.exists()
 
 
-# A test that plays mirrors of different speeds does so by sleeping a few milliseconds a request.
-# Windows sleeps in steps of 15.6 ms, which makes the played mirrors look alike, so the tests that
-# count on which mirror is the faster one are left out there.
-plays_speeds = pytest.mark.skipif(sys.platform == "win32", reason="Windows sleeps too coarsely to play mirror speeds")
+# A test that plays mirrors of different speeds does so by sleeping a few milliseconds a request,
+# and then counts on which mirror the download found the faster one. Windows sleeps in steps of
+# 15.6 ms, and a busy machine of a CI service sleeps longer than asked, so the played mirrors look
+# alike there, and these tests are left out. They run on a developer's machine.
+plays_speeds = pytest.mark.skipif(
+    sys.platform == "win32" or bool(os.environ.get("CI")),
+    reason="This machine sleeps too coarsely to play mirror speeds",
+)
 
 
 class MirrorsWithRanges:
@@ -526,6 +530,7 @@ class MirrorsWithRanges:
         return sum(1 for url, _, _ in self.asked if url == mirror)
 
 
+@plays_speeds
 def test_helper_downloadBinary_in_ranges_from_the_mirror_with_the_most_bandwidth(tmp_path, monkeypatch):
     content = os.urandom(10_000)
     first, second, third = MirrorsWithRanges.MIRRORS
@@ -654,6 +659,7 @@ def test_helper_downloadBinary_in_ranges_leaves_a_mirror_that_falls_behind(tmp_p
     )
 
 
+@plays_speeds
 def test_helper_downloadBinary_in_ranges_leaves_a_mirror_that_goes_silent(tmp_path, monkeypatch):
     content = os.urandom(10_000)
     first, second, third = MirrorsWithRanges.MIRRORS
@@ -750,6 +756,7 @@ def test_helper_downloadBinary_gives_up_when_no_mirror_has_the_file(tmp_path, mo
     assert not out.exists()
 
 
+@plays_speeds
 def test_helper_downloadBinary_in_ranges_opens_more_connections_while_it_is_fast(tmp_path, monkeypatch):
     content = os.urandom(60_000)
     mirrors = MirrorsWithRanges(monkeypatch, content, bytes_a_second={MirrorsWithRanges.MIRRORS[0]: 20_000})
@@ -770,6 +777,7 @@ def test_helper_downloadBinary_in_ranges_opens_more_connections_while_it_is_fast
     assert len(mirrors.connections[first]) == 12
 
 
+@plays_speeds
 def test_helper_downloadBinary_in_ranges_stays_at_its_connections_while_it_is_slow(tmp_path, monkeypatch):
     content = os.urandom(20_000)
     mirrors = MirrorsWithRanges(monkeypatch, content, bytes_a_second={MirrorsWithRanges.MIRRORS[0]: 20_000})
@@ -782,6 +790,7 @@ def test_helper_downloadBinary_in_ranges_stays_at_its_connections_while_it_is_sl
     assert len(mirrors.connections[first]) == 8
 
 
+@plays_speeds
 def test_helper_downloadBinary_in_ranges_learns_how_many_connections_a_mirror_takes(tmp_path, monkeypatch):
     content = os.urandom(60_000)
     first = MirrorsWithRanges.MIRRORS[0]
