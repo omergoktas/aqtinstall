@@ -266,11 +266,13 @@ class Updater:
         new_hostdata = "HostData=../{}".format(arch_dir)
         new_host_lib_execs = "./bin" if os_name.startswith("windows") else "./libexec"
         old_host_lib_execs = re.compile(r"^HostLibraryExecutables=[^\n]*$", flags=re.MULTILINE)
+        # The whole line, so that a second run replaces the folder the first run wrote instead of adding another
+        old_hostprefix = re.compile(r"^HostPrefix=\.\./\.\./[^\n]*$", flags=re.MULTILINE)
 
         self._patch_textfile(target_qt_conf, old_host_lib_execs, f"HostLibraryExecutables={new_host_lib_execs}")
         for unpatched in unpatched_paths():
             self._patch_textfile(target_qt_conf, f"Prefix={unpatched}target", new_targetprefix)
-        self._patch_textfile(target_qt_conf, "HostPrefix=../../", new_hostprefix)
+        self._patch_textfile(target_qt_conf, old_hostprefix, new_hostprefix)
         self._patch_textfile(target_qt_conf, "HostData=target", new_hostdata)
 
     def patch_qdevice_file(self, base_dir: str, qt_version: str, arch_dir: str, os_name: str):

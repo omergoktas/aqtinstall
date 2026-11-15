@@ -6,14 +6,14 @@ It is not on PyPI. Install a version by its tag from this repository:
 
 .. code-block:: console
 
-    pipx install git+https://github.com/omergoktas/aqtinstall@v4.1.0
+    pipx install git+https://github.com/omergoktas/aqtinstall@v4.1.1
 
 or as a tool of `mise`_, in a ``mise.toml``:
 
 .. code-block:: toml
 
     [tools]
-    "pipx:omergoktas/aqtinstall" = "v4.1.0"
+    "pipx:omergoktas/aqtinstall" = "v4.1.1"
 
 What it has that aqtinstall 3.3 does not:
 

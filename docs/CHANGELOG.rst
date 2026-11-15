@@ -13,6 +13,14 @@ All notable changes to this project will be documented in this file.
 `Unreleased`_
 =============
 
+`v4.1.1`_ (15, Nov. 2026)
+=========================
+
+Fixed
+-----
+- A module added on top of an Android or iOS Qt build no longer doubles the desktop folder's
+  name in the ``HostPrefix`` line of ``bin/target_qt.conf``
+
 `v4.1.0`_ (15, Nov. 2026)
 =========================
 
@@ -574,7 +582,8 @@ Security
 * Check Update.xml file with SHA256 hash (#493)
 
 
-.. _Unreleased: https://github.com/omergoktas/aqtinstall/compare/v4.1.0...HEAD
+.. _Unreleased: https://github.com/omergoktas/aqtinstall/compare/v4.1.1...HEAD
+.. _v4.1.1: https://github.com/omergoktas/aqtinstall/compare/v4.1.0...v4.1.1
 .. _v4.1.0: https://github.com/omergoktas/aqtinstall/compare/v4.0.0...v4.1.0
 .. _v4.0.0: https://github.com/omergoktas/aqtinstall/compare/v3.3.0...v4.0.0
 .. _v3.3.0: https://github.com/miurahr/aqtinstall/compare/v3.2.1...v3.3.0
