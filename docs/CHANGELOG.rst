@@ -13,8 +13,20 @@ All notable changes to this project will be documented in this file.
 `Unreleased`_
 =============
 
+`v4.0.0`_ (15, Nov. 2026)
+=========================
+
+The first version of the fork at github.com/omergoktas/aqtinstall, which counts its versions
+on its own from here on. It holds everything that came after v3.3.0, the fork's own changes
+and those that miurahr/aqtinstall had not released.
+
 Fixed
 -----
+- Linux ARM64's pkg-config files name the folder Qt is installed into
+- The default architecture of a Windows ARM64 desktop Qt
+- A 7z archive is told from a zip file by its signature
+- A server's error answer, or a connection that breaks, sends the download to another mirror
+- The tests no longer touch the home folder of whoever runs them
 - fix list-qt-official, install-qt-official on macOS(#1015)
 - fix list-qt-official wrt types (#990)
 - fix IFW repository URLs (#1008)
@@ -28,6 +40,7 @@ Fixed
 Added
 -----
 - Download large archives over several connections to the fastest mirror
+- The iOS kits of Qt 6.12
 - Pass over archives that an earlier run installed, so a run that was cut off goes on where it stopped
 - ``uninstall-qt`` command, which removes a Qt that aqt installed, or only some of its add-on modules
 - ``list-installed`` command, which lists the Qt builds in an output directory with their add-on modules
@@ -60,6 +73,7 @@ Changed
 
 Removed
 -------
+- Publishing to PyPI: the fork is installed from its repository, by its version's tag
 - CODE_OF_CONDUCT and its reference (#994, #1014)
 
 `v3.3.0`_ (2, June, 2025)
@@ -551,7 +565,8 @@ Security
 * Check Update.xml file with SHA256 hash (#493)
 
 
-.. _Unreleased: https://github.com/miurahr/aqtinstall/compare/v3.3.0...HEAD
+.. _Unreleased: https://github.com/omergoktas/aqtinstall/compare/v4.0.0...HEAD
+.. _v4.0.0: https://github.com/omergoktas/aqtinstall/compare/v3.3.0...v4.0.0
 .. _v3.3.0: https://github.com/miurahr/aqtinstall/compare/v3.2.1...v3.3.0
 .. _v3.2.1: https://github.com/miurahr/aqtinstall/compare/v3.2.0...v3.2.1
 .. _v3.2.0: https://github.com/miurahr/aqtinstall/compare/v3.1.21...v3.2.0

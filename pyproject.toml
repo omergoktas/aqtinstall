@@ -6,6 +6,9 @@ license-files = ["LICENSE"]
 authors = [
     {name = "Hiroshi Miura", email = "miurahr@linux.com"},
 ]
+maintainers = [
+    {name = "Ömer Göktaş"},
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
@@ -76,10 +79,9 @@ debug = [
 
 [project.urls]
 Documentation = "https://aqtinstall.readthedocs.io/"
-"Bug Tracker" = "https://github.com/miurahr/aqtinstall/issues"
-Wiki = "https://github.com/miurahr/aqtinstall/wiki"
-Source = "https://github.com/miurahr/aqtinstall"
-Changelog = "https://aqtinstall.readthedocs.io/en/latest/CHANGELOG.html"
+Source = "https://github.com/omergoktas/aqtinstall"
+Changelog = "https://github.com/omergoktas/aqtinstall/blob/master/docs/CHANGELOG.rst"
+Upstream = "https://github.com/miurahr/aqtinstall"
 
 [build-system]
 requires = ["setuptools>=80", "setuptools_scm[toml]>=9.2.0"]

@@ -1,22 +1,36 @@
 Another Qt installer(aqt)
 =========================
 
-- Release: |pypi|
-- Documentation: |docs|
-- Test status: |gha| and Coverage: |coveralls|
-- Project maturity |Package health|
+This is Ömer Göktaş's fork of `aqtinstall`_, kept and versioned on its own from 4.0.0 on.
+It is not on PyPI. Install a version by its tag from this repository:
 
-.. |pypi| image:: https://badge.fury.io/py/aqtinstall.svg
-   :target: http://badge.fury.io/py/aqtinstall
-.. |docs| image:: https://readthedocs.org/projects/aqtinstall/badge/?version=stable
-   :target: https://aqtinstall.readthedocs.io/en/latest/?badge=stable
-.. |gha| image:: https://github.com/miurahr/aqtinstall/workflows/Test%20on%20GH%20actions%20environment/badge.svg
-   :target: https://github.com/miurahr/aqtinstall/actions?query=workflow%3A%22Test+on+GH+actions+environment%22
-.. |coveralls| image:: https://coveralls.io/repos/github/miurahr/aqtinstall/badge.svg?branch=master
-   :target: https://coveralls.io/github/miurahr/aqtinstall?branch=master
-.. |Package health| image:: https://img.shields.io/badge/visit-snyk.io-azure
-  :target: https://snyk.io/advisor/python/aqtinstall
-  :alt: aqtinstall
+.. code-block:: console
+
+    pipx install git+https://github.com/omergoktas/aqtinstall@v4.0.0
+
+or as a tool of `mise`_, in a ``mise.toml``:
+
+.. code-block:: toml
+
+    [tools]
+    "pipx:omergoktas/aqtinstall" = "v4.0.0"
+
+What it has that aqtinstall 3.3 does not:
+
+- Downloads from the fastest mirror over several connections; on a fast line a whole Qt arrives in
+  about half the time.
+- An install that was cut off goes on where it stopped, and an install that names one module more
+  downloads that module alone.
+- ``aqt list-installed`` lists the Qt builds in a directory with their add-on modules, and
+  ``aqt uninstall-qt`` removes a Qt, or only some of its modules.
+- No ``aqtinstall.log`` is written unless ``AQT_LOG_FILE`` names one, and nothing is made in the home folder.
+- It knows the iOS kits of Qt 6.12.
+
+The `ChangeLog`_ has the rest.
+
+.. _`aqtinstall`: https://github.com/miurahr/aqtinstall
+.. _`mise`: https://mise.jdx.dev
+.. _`ChangeLog`: docs/CHANGELOG.rst
 
 
 This is a utility alternative to the official graphical Qt installer, for using in CI environment
