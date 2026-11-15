@@ -1,0 +1,115 @@
+name: Test
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Lint and types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e ".[test,check]"
+      - run: ruff check aqt tests
+      - run: ruff format --check aqt tests
+      - run: mypy aqt
+
+  test:
+    name: Tests on ${{ matrix.os }} with Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        # The oldest Python the program runs on, and the one it is most used with
+        python: ["3.10", "3.14"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -e ".[test]"
+      # Some tests write under the home folder, so they get one of their own
+      - name: Run the tests
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/home"
+          HOME="$RUNNER_TEMP/home" USERPROFILE="$RUNNER_TEMP/home" python -m pytest -q -p no:cacheprovider tests
+
+  install:
+    name: A real install on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            host: linux
+            arch: linux_gcc_64
+            folder: gcc_64
+          - os: macos-latest
+            host: mac
+            arch: clang_64
+            folder: macos
+          - os: windows-latest
+            host: windows
+            arch: win64_msvc2022_64
+            folder: msvc2022_64
+    env:
+      QT: "6.12.0"
+      HOST: ${{ matrix.host }}
+      ARCH: ${{ matrix.arch }}
+      FOLDER: ${{ matrix.folder }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # With the tags, so that the program knows its version
+          fetch-depth: 0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install .
+      # Installs a Qt with one module, adds a second, removes it again, and removes the Qt,
+      # and checks after each step what the program lists as installed
+      - name: Install, add a module, remove it, remove the Qt
+        shell: bash
+        run: |
+          set -euo pipefail
+          installed() { aqt list-installed -O qt | tr -d '\r'; }
+          aqt version
+
+          aqt install-qt "$HOST" desktop "$QT" "$ARCH" -m qtimageformats -O qt
+          test "$(installed)" = "$QT/$FOLDER qtimageformats"
+          test "$("qt/$QT/$FOLDER/bin/qmake" -query QT_VERSION | tr -d '\r')" = "$QT"
+
+          aqt install-qt "$HOST" desktop "$QT" "$ARCH" -m qtimageformats qtshadertools -O qt 2>&1 | tee add.log
+          grep -q "Already installed: qtbase" add.log
+          test "$(grep -c "Finished installation of " add.log)" = 1
+          test "$(installed)" = "$QT/$FOLDER qtimageformats qtshadertools"
+
+          aqt uninstall-qt "$HOST" desktop "$QT" "$ARCH" -m qtshadertools -O qt
+          test "$(installed)" = "$QT/$FOLDER qtimageformats"
+          test "$("qt/$QT/$FOLDER/bin/qmake" -query QT_VERSION | tr -d '\r')" = "$QT"
+
+          aqt uninstall-qt "$HOST" desktop "$QT" "$ARCH" -O qt
+          test -z "$(installed)"
+          test ! -e "qt/$QT"

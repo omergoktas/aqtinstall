@@ -1503,6 +1503,9 @@ def test_install(
         sys.stdout.write(out)
         sys.stderr.write(err)
 
+        # Windows prints its paths with backslashes, and the expected lines name them with slashes
+        if sys.platform == "win32":
+            err = err.replace("\\", "/")
         assert expect_out.match(err)
 
         for key in arch_dir.keys():

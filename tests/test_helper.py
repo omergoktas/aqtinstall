@@ -2,6 +2,7 @@ import binascii
 import hashlib
 import os
 import re
+import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -397,6 +398,12 @@ def test_helper_downloadBinary_error_page(tmp_path, monkeypatch):
     assert not out.exists()
 
 
+# A test that plays mirrors of different speeds does so by sleeping a few milliseconds a request.
+# Windows sleeps in steps of 15.6 ms, which makes the played mirrors look alike, so the tests that
+# count on which mirror is the faster one are left out there.
+plays_speeds = pytest.mark.skipif(sys.platform == "win32", reason="Windows sleeps too coarsely to play mirror speeds")
+
+
 class MirrorsWithRanges:
     """Stands in for Qt's server, which sends a download on to a mirror, and for the mirrors, which
     hand out any range of bytes of the file. Notes which mirror was asked for which range."""
@@ -570,6 +577,7 @@ def test_helper_best_server(known, expected):
     assert helper._best_server(["a", "b", "c"], facts) == expected
 
 
+@plays_speeds
 def test_helper_downloadBinary_goes_to_the_best_mirror_once_it_is_known(tmp_path, monkeypatch):
     content = os.urandom(10_000)
     first, second, third = MirrorsWithRanges.MIRRORS
@@ -622,6 +630,7 @@ def test_helper_downloadBinary_in_ranges_tests_no_mirror_for_a_file_too_small(tm
     assert helper._servers_known == {}
 
 
+@plays_speeds
 def test_helper_downloadBinary_in_ranges_leaves_a_mirror_that_falls_behind(tmp_path, monkeypatch):
     content = os.urandom(40_000)
     first, second, third = MirrorsWithRanges.MIRRORS
