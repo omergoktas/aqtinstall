@@ -5,6 +5,7 @@ import os
 import posixpath
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -21,9 +22,9 @@ import py7zr
 import pytest
 
 from aqt.archives import QtPackage
-from aqt.exceptions import ArchiveDownloadError, ArchiveExtractionError
+from aqt.exceptions import ArchiveDownloadError, ArchiveExtractionError, CliInputError
 from aqt.helper import Settings
-from aqt.installer import SEVENZIP_SIGNATURE, Cli, installer
+from aqt.installer import SEVENZIP_SIGNATURE, Cli, installed_qt, installer, uninstall_qt
 
 
 class MockMultiprocessingContext:
@@ -2198,3 +2199,236 @@ def test_install_installer_passes_over_an_archive_installed_already(monkeypatch,
     tool.unlink()
     assert install_one_file_archive(monkeypatch, tmp_path, qt_package) == ["downloaded"]
     assert tool.read_bytes() == b"a tool"
+
+
+def install_archive(monkeypatch, folder: Path, name: str, files: Dict[str, Optional[bytes]], **facts) -> QtPackage:
+    """Makes a 7z archive that holds `files`, a folder where the content is None, installs it
+    into the folder's `out` as part of the Qt build in 6.9.9/gcc_64, and returns the package
+    that names it"""
+    made = folder / "made"
+    (made / "empty").mkdir(parents=True, exist_ok=True)
+    with py7zr.SevenZipFile(made / f"{name}.7z", "w") as szf:
+        for path, content in files.items():
+            if content is None:
+                szf.write(made / "empty", path)
+            else:
+                szf.writestr(content, path)
+    qt_package = QtPackage(
+        name,
+        "base_url",
+        f"online/qtsdkrepository/{name}.7z",
+        f"{name}.7z",
+        "",
+        "package_desc",
+        "pkg_update_name",
+        module=facts.get("module", ""),
+        archives_of_package=facts.get("archives_of_package", 1),
+        qt_folder="6.9.9/gcc_64",
+    )
+    monkeypatch.setattr("aqt.installer.get_hash", lambda *args, **kwargs: "")
+    monkeypatch.setattr("aqt.installer.downloadBinaryFile", lambda url, out, *args: shutil.copy(made / f"{name}.7z", out))
+    installer(
+        qt_package=qt_package,
+        base_dir=str(folder / "out"),
+        command=None,
+        queue=MockMultiprocessingManager.Queue(),
+        archive_dest=folder,
+        settings_ini=Settings.configfile,
+        keep=False,
+    )
+    return qt_package
+
+
+def install_qt_with_a_module(monkeypatch, folder: Path) -> Path:
+    """Installs a Qt of one archive and a module of two, which share a file with it, and
+    returns the folder of the Qt"""
+    install_archive(
+        monkeypatch,
+        folder,
+        "qtbase",
+        {"6.9.9/gcc_64/bin/tool": b"a tool", "6.9.9/gcc_64/lib/shared": b"shared", "6.9.9/gcc_64/both": None},
+    )
+    install_archive(
+        monkeypatch,
+        folder,
+        "qtextra",
+        {"6.9.9/gcc_64/lib/libextra": b"extra", "6.9.9/gcc_64/lib/shared": b"shared"},
+        module="qtextra",
+        archives_of_package=2,
+    )
+    install_archive(
+        monkeypatch,
+        folder,
+        "qtextra-qml",
+        {
+            "6.9.9/gcc_64/qml/Extra/deep/qmldir": b"module Extra",
+            "6.9.9/gcc_64/plugins/extra/empty": None,
+            "6.9.9/gcc_64/both": None,
+        },
+        module="qtextra",
+        archives_of_package=2,
+    )
+    return folder / "out" / "6.9.9" / "gcc_64"
+
+
+def records_of(folder: Path) -> List[str]:
+    return sorted(record.name.split(".7z.")[0] + record.suffix for record in (folder / "out" / ".aqtinstall").iterdir())
+
+
+def test_installed_qt_tells_the_builds_and_their_modules(monkeypatch, tmp_path):
+    out = str(tmp_path / "out")
+    assert installed_qt(out) == {}
+    install_archive(monkeypatch, tmp_path, "qtbase", {"6.9.9/gcc_64/bin/tool": b"a tool"})
+    assert installed_qt(out) == {"6.9.9/gcc_64": {"": True}}
+    # A module with one of its two archives is not there in full
+    install_archive(
+        monkeypatch, tmp_path, "qtextra", {"6.9.9/gcc_64/lib/libextra": b"extra"}, module="qtextra", archives_of_package=2
+    )
+    assert installed_qt(out) == {"6.9.9/gcc_64": {"": True, "qtextra": False}}
+    install_archive(
+        monkeypatch, tmp_path, "qtextra-qml", {"6.9.9/gcc_64/qml/qmldir": b""}, module="qtextra", archives_of_package=2
+    )
+    assert installed_qt(out) == {"6.9.9/gcc_64": {"": True, "qtextra": True}}
+    # A part whose files are gone is not installed
+    shutil.rmtree(tmp_path / "out" / "6.9.9" / "gcc_64" / "bin")
+    assert installed_qt(out) == {"6.9.9/gcc_64": {"": False, "qtextra": True}}
+
+
+def test_uninstall_qt_removes_a_module_and_nothing_else(monkeypatch, tmp_path):
+    qt = install_qt_with_a_module(monkeypatch, tmp_path)
+    out = str(tmp_path / "out")
+    (qt / "lib" / "made-later").write_bytes(b"not from an archive")
+    os.chmod(qt / "lib" / "libextra", stat.S_IREAD)
+    assert records_of(tmp_path) == [
+        "qtbase.files",
+        "qtbase.json",
+        "qtextra-qml.files",
+        "qtextra-qml.json",
+        "qtextra.files",
+        "qtextra.json",
+    ]
+
+    uninstall_qt(out, "6.9.9/gcc_64", ["qtextra"])
+
+    # The module's files are gone, with the folders they leave empty
+    assert not (qt / "lib" / "libextra").exists()
+    assert not (qt / "qml").exists()
+    # So is the empty folder that the module brought, but not the one that Qt itself brought too
+    assert not (qt / "plugins").exists()
+    assert (qt / "both").is_dir()
+    # What Qt itself brought stays, the file that the module brought too included
+    assert (qt / "bin" / "tool").read_bytes() == b"a tool"
+    assert (qt / "lib" / "shared").read_bytes() == b"shared"
+    assert (qt / "lib" / "made-later").exists()
+    assert records_of(tmp_path) == ["qtbase.files", "qtbase.json"]
+    assert installed_qt(out) == {"6.9.9/gcc_64": {"": True}}
+    # The module installs again afterwards
+    install_archive(monkeypatch, tmp_path, "qtextra", {"6.9.9/gcc_64/lib/libextra": b"extra"}, module="qtextra")
+    assert (qt / "lib" / "libextra").read_bytes() == b"extra"
+
+
+def test_uninstall_qt_of_a_module_that_is_not_there_changes_nothing(monkeypatch, tmp_path, capsys):
+    qt = install_qt_with_a_module(monkeypatch, tmp_path)
+    before = sorted(path for path in qt.rglob("*"))
+    uninstall_qt(str(tmp_path / "out"), "6.9.9/gcc_64", ["qtother"])
+    assert "qtother is not recorded as installed" in capsys.readouterr().err
+    # An empty list of modules is no request to remove the whole Qt, and neither is an empty name
+    uninstall_qt(str(tmp_path / "out"), "6.9.9/gcc_64", [])
+    with pytest.raises(CliInputError):
+        uninstall_qt(str(tmp_path / "out"), "6.9.9/gcc_64", [""])
+    assert sorted(path for path in qt.rglob("*")) == before
+    cli = Cli()
+    cli._setup_settings()
+    with pytest.raises(SystemExit):
+        cli.run(["uninstall-qt", "linux", "desktop", "6.9.9", "gcc_64", "--outputdir", str(tmp_path / "out"), "-m"])
+    assert sorted(path for path in qt.rglob("*")) == before
+    assert len(records_of(tmp_path)) == 6
+
+
+def test_uninstall_qt_removes_no_file_outside_the_qt(monkeypatch, tmp_path):
+    qt = install_qt_with_a_module(monkeypatch, tmp_path)
+    outside = tmp_path / "out" / "outside"
+    outside.write_bytes(b"not Qt's")
+    for files_list in (tmp_path / "out" / ".aqtinstall").glob("qtextra.7z.*.files"):
+        files_list.write_text("6.9.9/gcc_64/lib/libextra\n6.9.9/gcc_64/../../outside\noutside\n", encoding="utf-8")
+    uninstall_qt(str(tmp_path / "out"), "6.9.9/gcc_64", ["qtextra"])
+    assert not (qt / "lib" / "libextra").exists()
+    assert outside.read_bytes() == b"not Qt's"
+
+
+def test_uninstall_qt_removes_a_whole_qt(monkeypatch, tmp_path):
+    qt = install_qt_with_a_module(monkeypatch, tmp_path)
+    os.chmod(qt / "bin" / "tool", stat.S_IREAD)
+    uninstall_qt(str(tmp_path / "out"), "6.9.9/gcc_64")
+    assert not qt.exists()
+    # The version's folder goes with its last build
+    assert not qt.parent.exists()
+    assert records_of(tmp_path) == []
+    # aqt removes only what it has a record of
+    (tmp_path / "out" / "6.9.9" / "gcc_64").mkdir(parents=True)
+    with pytest.raises(CliInputError) as error:
+        uninstall_qt(str(tmp_path / "out"), "6.9.9/gcc_64")
+    assert "aqt removes only what it installed itself" in str(error.value)
+    assert qt.exists()
+
+
+def test_cli_lists_and_uninstalls(monkeypatch, tmp_path, capsys):
+    qt = install_qt_with_a_module(monkeypatch, tmp_path)
+    out = str(tmp_path / "out")
+    cli = Cli()
+    cli._setup_settings()
+    assert cli.run(["list-installed", "--outputdir", out]) == 0
+    assert capsys.readouterr().out == "6.9.9/gcc_64 qtextra\n"
+    assert cli.run(["uninstall-qt", "linux", "desktop", "6.9.9", "gcc_64", "--outputdir", out, "-m", "qtextra"]) == 0
+    assert not (qt / "lib" / "libextra").exists()
+    capsys.readouterr()
+    assert cli.run(["list-installed", "--outputdir", out]) == 0
+    assert capsys.readouterr().out == "6.9.9/gcc_64\n"
+    assert cli.run(["uninstall-qt", "linux", "desktop", "6.9.9", "gcc_64", "--outputdir", out]) == 0
+    assert not qt.exists()
+    capsys.readouterr()
+    assert cli.run(["list-installed", "--outputdir", out]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_cli_lists_no_build_whose_qt_itself_has_no_record(monkeypatch, tmp_path, capsys):
+    # A module alone, as --noarchives installs it, or as a run leaves it that was cut off early
+    install_archive(monkeypatch, tmp_path, "qtextra", {"6.9.9/gcc_64/lib/libextra": b"extra"}, module="qtextra")
+    cli = Cli()
+    cli._setup_settings()
+    capsys.readouterr()
+    assert cli.run(["list-installed", "--outputdir", str(tmp_path / "out")]) == 0
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert "aqt has no record of Qt itself there, only of qtextra" in err
+    # Qt itself with one of its two archives is not listed either
+    install_archive(monkeypatch, tmp_path, "qtbase", {"6.9.9/gcc_64/bin/tool": b"a tool"}, archives_of_package=2)
+    assert cli.run(["list-installed", "--outputdir", str(tmp_path / "out")]) == 0
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert "not installed in full: Qt itself" in err
+
+
+def test_uninstall_qt_leaves_a_qt_that_is_a_link(monkeypatch, tmp_path):
+    if sys.platform == "win32":
+        pytest.skip("Making a link needs a right that a Windows user may lack")
+    qt = install_qt_with_a_module(monkeypatch, tmp_path)
+    real = tmp_path / "real"
+    qt.rename(real)
+    qt.symlink_to(real)
+    mode = real.stat().st_mode
+    with pytest.raises(CliInputError):
+        uninstall_qt(str(tmp_path / "out"), "6.9.9/gcc_64")
+    assert (real / "bin" / "tool").read_bytes() == b"a tool"
+    assert real.stat().st_mode == mode
+    assert len(records_of(tmp_path)) == 6
+
+
+def test_uninstall_qt_refuses_when_a_staying_archive_has_no_list(monkeypatch, tmp_path):
+    qt = install_qt_with_a_module(monkeypatch, tmp_path)
+    for files_list in (tmp_path / "out" / ".aqtinstall").glob("qtbase.7z.*.files"):
+        files_list.unlink()
+    with pytest.raises(CliInputError):
+        uninstall_qt(str(tmp_path / "out"), "6.9.9/gcc_64", ["qtextra"])
+    assert (qt / "lib" / "shared").read_bytes() == b"shared"
+    assert (qt / "lib" / "libextra").exists()

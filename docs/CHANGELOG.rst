@@ -29,6 +29,8 @@ Added
 -----
 - Download large archives over several connections to the fastest mirror
 - Pass over archives that an earlier run installed, so a run that was cut off goes on where it stopped
+- ``uninstall-qt`` command, which removes a Qt that aqt installed, or only some of its add-on modules
+- ``list-installed`` command, which lists the Qt builds in an output directory with their add-on modules
 - ``AQT_LOG_FILE`` environment variable to name a log file
 - Release binaries for windows-arm64, macos15-arm64 (#931)
 - log commands of safely_run and safely_run_save_output (#1026)

@@ -62,6 +62,13 @@ class QtPackage:
     package_desc: str
     pkg_update_name: str
     version: Optional[Version] = field(default=None)
+    # The add-on module the archive is part of, as `--modules` names it; empty for Qt itself
+    module: str = ""
+    # How many archives its package has, the ones that `--archives` leaves out included
+    archives_of_package: int = 0
+    # The folder of the Qt build the archive is part of, under the output folder, such as
+    # 6.12.0/gcc_arm64; empty for an archive that is no part of a Qt build
+    qt_folder: str = ""
 
     def __repr__(self):
         v_info = f", version={self.version}" if self.version else ""
@@ -113,6 +120,10 @@ class ModuleToPackage:
 
     def has_package(self, package_name: str):
         return package_name in self._packages_to_modules
+
+    def module_of(self, package_name: str) -> Optional[str]:
+        """Returns the module that `package_name` is one of the possible packages of."""
+        return self._packages_to_modules.get(package_name)
 
     def get_modules(self) -> Iterable[str]:
         return self._modules_to_packages.keys()
@@ -591,15 +602,19 @@ class QtArchives:
         else:
             package_updates = update_xml.get_from(self.arch, self.is_include_base_package, target_packages)
         for packageupdate in package_updates:
+            module = self._module_of(packageupdate, target_packages)
             if not self.all_extra:
                 target_packages.remove_module_for_package(packageupdate.effective_name)
             should_filter_archives: bool = bool(self.subarchives) and self.should_filter_archives(
                 packageupdate.effective_name
             )
 
+            archives_of_package: List[QtPackage] = []
+            count_of_package = 0
             for archive, archive_install_path in zip_longest(
                 packageupdate.downloadable_archives, packageupdate.archive_install_paths, fillvalue=""
             ):
+                count_of_package += 1
                 archive_name = archive.split("-", maxsplit=1)[0]
                 if should_filter_archives and self.subarchives is not None and archive_name not in self.subarchives:
                     continue
@@ -611,7 +626,7 @@ class QtArchives:
                     # 5.15.0-0-202005140804qtbase-Linux-RHEL_7_6-GCC-Linux-RHEL_7_6-X86_64.7z
                     packageupdate.full_version + archive,
                 )
-                self.archives.append(
+                archives_of_package.append(
                     QtPackage(
                         name=archive_name,
                         base_url=base_url,
@@ -619,9 +634,34 @@ class QtArchives:
                         archive=archive,
                         archive_install_path=archive_install_path,
                         package_desc=packageupdate.description,
-                        pkg_update_name=packageupdate.name,  # For testing purposes
+                        pkg_update_name=packageupdate.name,
+                        module=module,
                     )
                 )
+            for qt_package in archives_of_package:
+                qt_package.archives_of_package = count_of_package
+            self.archives.extend(archives_of_package)
+
+    def _module_of(self, packageupdate: PackageUpdate, target_packages: ModuleToPackage) -> str:
+        """Returns the add-on module that a package is, as `--modules` and `list-qt --modules`
+        name it, and an empty name for Qt itself. An extension is named without its version,
+        qtpdf and not qtpdf@6.12.1, however it was asked for. With `--modules all` nobody named
+        the module, so its name is read from the package's: qtmultimedia from
+        qt.qt6.6120.addons.qtmultimedia.linux_gcc_arm64, and qt3d.debug_information from
+        qt.qt6.6120.addons.qt3d.debug_information.linux_gcc_arm64."""
+        module = target_packages.module_of(packageupdate.effective_name)
+        if module is not None:
+            return "" if module == self._base_module_name() else module.split("@", 1)[0]
+        if packageupdate.is_base_package():
+            return ""
+        words = packageupdate.effective_name.split(".")[:-1]
+        if len(words) > 1 and words[0] == "extensions":
+            return words[1]
+        if self._version_str() in words:
+            words = words[words.index(self._version_str()) + 1 :]
+        if words and words[0] == "addons":
+            words = words[1:]
+        return ".".join(words)
 
     def _parse_update_xmls(self, update_xmls: list[UpdateXmls], target_packages: Optional[ModuleToPackage]) -> None:
         if not target_packages:

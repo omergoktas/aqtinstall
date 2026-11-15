@@ -615,6 +615,76 @@ There are various combinations to accept according to Qt version.
 
 See `common options`_.
 
+A run passes over every archive that an earlier run installed into the same output
+directory, so a run that was cut off goes on where it stopped, and a run that names one
+module more downloads that module alone. aqt keeps its records of what it installed in the
+``.aqtinstall`` folder of the output directory.
+
+
+.. _uninstall-qt command:
+
+uninstall-qt command
+~~~~~~~~~~~~~~~~~~~~
+
+.. program:: uninstall-qt
+
+.. code-block:: bash
+
+    aqt uninstall-qt
+        [-h | --help]
+        [-O | --outputdir <directory>]
+        [-m | --modules <module> [<module>...]]
+        <host> <target> <Qt version> [<arch>]
+
+Remove a Qt that aqt installed, or only some of its add-on modules. The host, target,
+version and architecture are the ones the Qt was installed with.
+
+.. option:: --modules, -m <module> [<module>...]
+
+    Remove only these add-on modules, and leave the rest of the Qt as it is. Each
+    module goes file by file, from the list of its files that aqt kept when it installed
+    the module, together with the folders this leaves empty. Without this option, the
+    whole Qt goes.
+
+.. option:: --outputdir, -O <Output Directory>
+
+    The output directory the Qt was installed into. The default is the current directory.
+
+aqt removes only what it installed itself: a Qt that it has no record of, such as one from
+Qt's own installer, is refused. Nothing is asked of a server.
+
+.. code-block:: console
+
+    $ aqt install-qt linux desktop 6.12.0 linux_gcc_64 -m qtmultimedia qtshadertools -O ~/Qt
+    $ aqt uninstall-qt linux desktop 6.12.0 linux_gcc_64 -m qtmultimedia -O ~/Qt
+
+
+.. _list-installed command:
+
+list-installed command
+~~~~~~~~~~~~~~~~~~~~~~
+
+.. program:: list-installed
+
+.. code-block:: bash
+
+    aqt list-installed
+        [-h | --help]
+        [-O | --outputdir <directory>]
+
+List the Qt builds that aqt installed into the output directory. Each line names the
+folder of one build and then the add-on modules it has:
+
+.. code-block:: console
+
+    $ aqt list-installed -O ~/Qt
+    6.12.0/gcc_64 qtimageformats qtshadertools
+
+A build is listed only when Qt itself is there in full, and a module only when it is; a
+warning names what is left out. The list comes from aqt's own records, so nothing is asked
+of a server, and a Qt that another program installed is not on it, even when aqt added
+modules to it.
+
 
 .. _install-src command:
 

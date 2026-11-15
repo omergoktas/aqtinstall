@@ -8,7 +8,15 @@ from typing import Dict, Iterable, List, Set
 
 import pytest
 
-from aqt.archives import ModuleToPackage, QtArchives, QtPackage, SrcDocExamplesArchives, ToolArchives, Updates
+from aqt.archives import (
+    ModuleToPackage,
+    PackageUpdate,
+    QtArchives,
+    QtPackage,
+    SrcDocExamplesArchives,
+    ToolArchives,
+    Updates,
+)
 from aqt.exceptions import ArchiveListError, NoPackageFound
 from aqt.helper import Settings
 from aqt.metadata import Version
@@ -173,7 +181,12 @@ def test_qt_archives_modules(monkeypatch, arch, requested_module_names, has_none
         assert mod_name in unvisited_modules
         unvisited_modules.remove(mod_name)
         expected_meta = locate_module_data(expected, mod_name)
+        qt_packages = list(qt_packages)
         verify_qt_package_stride(qt_packages, expected_meta)
+        # Every archive says which module it is part of, and how many archives its package has
+        for qt_package in qt_packages:
+            assert qt_package.module == ("" if mod_name == qt_base else mod_name.split(".")[-1])
+            assert qt_package.archives_of_package == len(qt_packages)
 
     assert len(unvisited_modules) == 0, f"Failed to produce packages for {unvisited_modules}"
 
@@ -502,6 +515,33 @@ def test_archives_weird_module_7z_name(
     qt_archives = make_archives_fn(subarchives, modules, is_include_base)
     archives = {pkg.archive for pkg in qt_archives.archives}
     assert archives == expect_archives
+    # A package counts all of its archives, the ones that --archives leaves out too, so that
+    # a part of Qt is never taken for the whole of it
+    if make_archives_fn is make_qt_archives:
+        for pkg in qt_archives.archives:
+            if pkg.archive == "qtbase-mingw.7z":
+                assert pkg.archives_of_package == 2
+
+
+def test_module_of_a_package_nobody_named(monkeypatch):
+    monkeypatch.setattr("aqt.archives.getUrl", lambda *args: qt_5140_xml_weird_module)
+    monkeypatch.setattr(
+        "aqt.archives.get_hash",
+        lambda *args, **kwargs: hashlib.sha256(bytes(qt_5140_xml_weird_module, "utf-8")).hexdigest(),
+    )
+    qt_archives = make_qt_archives([], ["all"], True)
+
+    def module_of(name: str) -> str:
+        update = PackageUpdate(name, "", "", "", "5.14.0-0-1", [], [], [], [], False, False, "")
+        return qt_archives._module_of(update, ModuleToPackage({}))
+
+    assert module_of("qt.qt5.5140.win32_mingw73") == ""
+    assert module_of("qt.qt5.5140.qtcharts.win32_mingw73") == "qtcharts"
+    assert module_of("qt.qt5.5140.addons.qtcharts.win32_mingw73") == "qtcharts"
+    assert module_of("qt.qt5.5140.debug_info.win32_mingw73") == "debug_info"
+    # The debug files of an add-on are a module of their own, named as list-qt names it
+    assert module_of("qt.qt5.5140.addons.qt3d.debug_information.win32_mingw73") == "qt3d.debug_information"
+    assert module_of("extensions.qtpdf.5140.win32_mingw73") == "qtpdf"
 
 
 @pytest.mark.parametrize(
@@ -661,6 +701,8 @@ def test_install_versioned_extensions(monkeypatch, modules, all_extra, expected,
     for ext, version in expected.items():
         package_name = f"extensions.{ext}.6120.{version}.{arch}"
         package = next(p for p in archives if p.pkg_update_name == package_name)
+        # An extension is recorded under its name alone, with or without a version asked for
+        assert package.module == ext
         assert package.archive_path == (
             f"online/qtsdkrepository/windows_x86/extensions/{ext}/6120/{version}/msvc2022_64/"
             f"{package_name}/6.12.0-123test.7z"

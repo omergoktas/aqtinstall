@@ -32,7 +32,9 @@ import os
 import platform
 import posixpath
 import re
+import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tarfile
@@ -42,7 +44,7 @@ from logging import getLogger
 from logging.handlers import QueueHandler
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import List, MutableMapping, Optional, Tuple, cast
+from typing import Any, Dict, List, MutableMapping, Optional, Set, Tuple, cast
 
 import aqt
 from aqt.archives import QtArchives, QtPackage, SrcDocExamplesArchives, ToolArchives
@@ -488,6 +490,11 @@ class Cli:
 
         target_config = qt_archives.get_target_config()
         target_config.os_name = effective_os_name
+        # The record of every archive says which Qt build it is part of, so that
+        # list-installed and uninstall-qt find the build's archives again
+        qt_folder = Cli._qt_folder(effective_os_name, arch, _version)
+        for qt_package in qt_archives.get_packages():
+            qt_package.qt_folder = qt_folder
 
         with TemporaryDirectory() as temp_dir:
             _archive_dest = Cli.choose_archive_dest(archive_dest, keep, temp_dir)
@@ -875,6 +882,71 @@ class Cli:
         """Display version information"""
         self.logger.info(self._format_aqt_version())
 
+    @staticmethod
+    def _qt_folder(os_name: str, arch: str, version: Version) -> str:
+        """Returns the folder of a Qt build under the output folder, such as 6.12.0/gcc_arm64."""
+        return posixpath.join(dir_for_version(version), QtRepoProperty.get_arch_dir_name(os_name, arch, version))
+
+    def run_uninstall_qt(self, args: InstallArgParser) -> None:
+        """Run the uninstall-qt subcommand: removes a Qt build that aqt installed, or only the
+        add-on modules named."""
+        self.show_aqt_version()
+        Cli._validate_version_str(args.qt_version)
+        arch = self._set_arch(args.arch, args.host, args.target, args.qt_version)
+        if not arch:
+            raise CliInputError("Please supply a target architecture.", should_show_help=True)
+        qt_folder = Cli._qt_folder(Cli._get_effective_os_name(args.host), arch, Version(args.qt_version))
+        uninstall_qt(args.outputdir or os.getcwd(), qt_folder, args.modules)
+
+    def run_list_installed(self, args: InstallArgParser) -> None:
+        """Run the list-installed subcommand: prints a line for every Qt build that aqt installed
+        into the output folder, the build's folder and then its add-on modules. A build is
+        printed only when Qt itself is there in full, and a module only when it is; a warning
+        names what is left out."""
+        for qt_folder, parts in sorted(installed_qt(args.outputdir or os.getcwd()).items()):
+            unfinished = sorted(module or "Qt itself" for module, whole in parts.items() if not whole)
+            if unfinished:
+                self.logger.warning(f"{qt_folder}: not installed in full: {', '.join(unfinished)}. Run install-qt again.")
+            modules = sorted(module for module, whole in parts.items() if module and whole)
+            if parts.get(""):
+                print(" ".join([qt_folder, *modules]))
+            elif "" not in parts:
+                self.logger.warning(
+                    f"{qt_folder}: aqt has no record of Qt itself there, only of {', '.join(modules) or 'no module'}."
+                )
+
+    def _set_uninstall_qt_parser(self, uninstall_qt_parser):
+        uninstall_qt_parser.set_defaults(func=self.run_uninstall_qt)
+        uninstall_qt_parser.add_argument(
+            "host",
+            choices=["linux", "linux_arm64", "mac", "windows", "windows_arm64", "all_os"],
+            help="host os name",
+        )
+        uninstall_qt_parser.add_argument(
+            "target",
+            choices=["desktop", "winrt", "android", "ios", "wasm", "qt"],
+            help="Target SDK",
+        )
+        uninstall_qt_parser.add_argument("qt_version", metavar="VERSION", help='Qt version in the format of "6.X.Y"')
+        uninstall_qt_parser.add_argument(
+            "arch", nargs="?", help="The architecture the Qt was installed with, such as linux_gcc_64"
+        )
+        uninstall_qt_parser.add_argument(
+            "-O", "--outputdir", nargs="?", help="The output directory the Qt was installed into (default current directory)"
+        )
+        uninstall_qt_parser.add_argument(
+            "-m",
+            "--modules",
+            nargs="+",
+            help="Remove only these add-on modules, and leave the rest of the Qt (default: remove the whole Qt)",
+        )
+
+    def _set_list_installed_parser(self, list_installed_parser):
+        list_installed_parser.set_defaults(func=self.run_list_installed)
+        list_installed_parser.add_argument(
+            "-O", "--outputdir", nargs="?", help="The output directory to look in (default current directory)"
+        )
+
     def _set_install_qt_parser(self, install_qt_parser):
         install_qt_parser.set_defaults(func=self.run_install_qt)
         install_qt_parser.add_argument(
@@ -1143,6 +1215,18 @@ class Cli:
 
         # Create install command parsers
         make_parser_it("install-qt", "Install Qt.", self._set_install_qt_parser, argparse.RawTextHelpFormatter)
+        make_parser_it(
+            "uninstall-qt",
+            "Remove a Qt that aqt installed, or only some of its add-on modules.",
+            self._set_uninstall_qt_parser,
+            None,
+        )
+        make_parser_it(
+            "list-installed",
+            "List the Qt builds that aqt installed into a directory, each with its add-on modules.",
+            self._set_list_installed_parser,
+            None,
+        )
         make_parser_it("install-tool", "Install tools.", self._set_install_tool_parser, None)
         make_parser_it(
             "install-qt-official",
@@ -1695,33 +1779,230 @@ def _installed_record(output_dir: str, qt_package: QtPackage) -> Path:
     return Path(output_dir) / INSTALLED_RECORDS_FOLDER / f"{qt_package.archive}.{digest}.json"
 
 
+def _files_list_of(record: Path) -> Path:
+    """Returns the file beside `record` that lists every file, link and folder its archive
+    brought, one a line, a folder with a slash at its end. Uninstalling the archive removes
+    them."""
+    return record.with_suffix(".files")
+
+
+def _has_its_files(facts: Dict[str, Any], extracted_to: str) -> bool:
+    """Tells whether the files that a record names are still where its archive was unpacked."""
+    files = facts.get("files")
+    return isinstance(files, list) and bool(files) and all(Path(extracted_to, file).exists() for file in files)
+
+
 def _is_installed(record: Path, extracted_to: str) -> bool:
     """Tells whether the archive of `record` is installed: it was unpacked in full once, and the
     files its record names are still where they were unpacked."""
     try:
-        files = json.loads(record.read_text(encoding="utf-8"))["files"]
-    except (OSError, ValueError, KeyError):
+        facts = json.loads(record.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
         return False
-    return bool(files) and all(Path(extracted_to, file).exists() for file in files)
+    return isinstance(facts, dict) and _has_its_files(facts, extracted_to)
+
+
+def _write_whole(file: Path, text: str) -> None:
+    """Writes `file` so that it holds either all of `text` or nothing of it."""
+    unfinished = file.with_name(file.name + ".part")
+    unfinished.write_text(text, encoding="utf-8")
+    os.replace(unfinished, file)
 
 
 def _record_as_installed(record: Path, qt_package: QtPackage, extracted_to: str, names: List[str]) -> None:
-    """Records the archive as installed, with a few of the files it brought. An archive whose
-    files are not known, as with an external extraction tool, gets no record, and so is
-    installed again by a later run."""
-    files: List[str] = []
+    """Records the archive as installed: what it is part of, a few of the files it brought, and
+    beside the record the list of everything it brought. An archive whose files are not known,
+    as with an external extraction tool, gets no record, and so is installed again by a later
+    run."""
+    brought: List[str] = []
+    samples: List[str] = []
     for name in names:
-        if len(files) == FILES_PER_INSTALLED_RECORD:
-            break
         path = Path(extracted_to, name)
-        if path.is_file() and not path.is_symlink():
-            files.append(name)
-    if not files:
+        if "\n" in name or "\r" in name:
+            continue
+        if path.is_symlink():
+            brought.append(name)
+        elif path.is_file():
+            brought.append(name)
+            if len(samples) < FILES_PER_INSTALLED_RECORD:
+                samples.append(name)
+        elif path.is_dir():
+            brought.append(name.rstrip("/") + "/")
+    if not samples:
         return
     record.parent.mkdir(parents=True, exist_ok=True)
-    unfinished = record.with_name(record.name + ".part")
-    unfinished.write_text(json.dumps({"archive": qt_package.archive_path, "files": files}, indent=1), encoding="utf-8")
-    os.replace(unfinished, record)
+    _write_whole(_files_list_of(record), "".join(name + "\n" for name in brought))
+    facts = {
+        "archive": qt_package.archive_path,
+        "package": qt_package.pkg_update_name,
+        "archives_of_package": qt_package.archives_of_package,
+        "qt": qt_package.qt_folder,
+        "module": qt_package.module,
+        "into": qt_package.archive_install_path,
+        "files": samples,
+    }
+    _write_whole(record, json.dumps(facts, indent=1))
+
+
+def _records_of_qt(output_dir: str) -> List[Tuple[Path, Dict[str, Any]]]:
+    """Returns the record of every archive in `output_dir` that is part of a Qt build, with what
+    the record says."""
+    records: List[Tuple[Path, Dict[str, Any]]] = []
+    for record in sorted(Path(output_dir, INSTALLED_RECORDS_FOLDER).glob("*.json")):
+        try:
+            facts = json.loads(record.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(facts, dict) and isinstance(facts.get("qt"), str) and facts["qt"]:
+            records.append((record, facts))
+    return records
+
+
+def installed_qt(output_dir: str) -> Dict[str, Dict[str, bool]]:
+    """Returns the Qt builds that aqt installed into `output_dir`, each by its folder there, such
+    as 6.12.0/gcc_arm64. A build has its parts by name, Qt itself under the empty name and every
+    add-on module under its own, and for each part whether it is there in full: every archive of
+    its package has a record, and the files the records name are still there. A part that has
+    no record at all is not among them. Nothing is asked of a server."""
+    parts: Dict[Tuple[str, str], List[int]] = {}
+    for _record, facts in _records_of_qt(output_dir):
+        there, needed = parts.setdefault((facts["qt"], str(facts.get("module", ""))), [0, 0])
+        if _has_its_files(facts, os.path.join(output_dir, str(facts.get("into", "")))):
+            there += 1
+        try:
+            needed = max(needed, int(facts.get("archives_of_package", 0)))
+        except (TypeError, ValueError):
+            pass
+        parts[(facts["qt"], str(facts.get("module", "")))] = [there, needed]
+    builds: Dict[str, Dict[str, bool]] = {}
+    for (qt_folder, module), (there, needed) in parts.items():
+        builds.setdefault(qt_folder, {})[module] = there > 0 and there >= needed
+    return builds
+
+
+def _remove_file(path: str) -> None:
+    """Removes a file or a link. Windows refuses to remove a read-only file as it is, so there
+    the file is made writable first. Elsewhere it is the folder that decides, and a refusal
+    stands."""
+    try:
+        os.unlink(path)
+    except PermissionError:
+        if os.name != "nt" or os.path.islink(path):
+            raise
+        os.chmod(path, stat.S_IWRITE)
+        os.unlink(path)
+
+
+def _remove_folder(path: str) -> None:
+    """Removes a folder with all it holds, on Windows its read-only files too."""
+
+    def remove_read_only(remove: Any, failed: str, error: Any) -> None:
+        if os.path.islink(failed) or not os.path.isfile(failed):
+            raise error if isinstance(error, BaseException) else error[1]
+        os.chmod(failed, stat.S_IWRITE)
+        remove(failed)
+
+    if os.name != "nt":
+        shutil.rmtree(path)
+    elif sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=remove_read_only)
+    else:
+        shutil.rmtree(path, onerror=remove_read_only)
+
+
+def uninstall_qt(output_dir: str, qt_folder: str, modules: Optional[List[str]] = None) -> None:
+    """Removes the Qt build that aqt installed into `qt_folder` of `output_dir`, such as
+    6.12.0/gcc_arm64, or only the add-on modules named.
+
+    A module goes file by file, from the lists that the records of its archives keep, together
+    with every folder that this leaves empty. A file or a folder that an archive which stays
+    also brought stays. With `modules` left out, the whole folder of the build goes; an empty list of modules
+    removes nothing. Nothing is asked of a server."""
+    logger = getLogger("aqt.installer")
+    records = [(record, facts) for record, facts in _records_of_qt(output_dir) if facts["qt"] == qt_folder]
+    if not records:
+        raise CliInputError(
+            f"No Qt in '{qt_folder}' is recorded in '{Path(output_dir, INSTALLED_RECORDS_FOLDER)}'. "
+            "aqt removes only what it installed itself."
+        )
+    qt_path = os.path.normpath(os.path.join(output_dir, qt_folder))
+
+    def forget(record: Path) -> None:
+        record.unlink(missing_ok=True)
+        _files_list_of(record).unlink(missing_ok=True)
+
+    if modules is None:
+        if os.path.islink(qt_path):
+            raise CliInputError(f"'{qt_path}' is a link to a folder. Remove the Qt it points to yourself.")
+        if os.path.isdir(qt_path):
+            _remove_folder(qt_path)
+        for record, _facts in records:
+            forget(record)
+        try:
+            os.rmdir(os.path.dirname(qt_path))
+        except OSError:
+            pass  # The version's folder holds other builds, or is the output folder itself
+        logger.info(f"Removed Qt from {qt_path}")
+        return
+
+    def brought_by(record: Path, facts: Dict[str, Any]) -> List[str]:
+        unpacked_to = os.path.join(output_dir, str(facts.get("into", "")))
+        names = _files_list_of(record).read_text(encoding="utf-8").splitlines()
+        return [os.path.normpath(os.path.join(unpacked_to, name)) for name in names if name]
+
+    # An extension is recorded without its version, however it was asked for
+    modules = [module.split("@", 1)[0] for module in modules]
+    if "" in modules:
+        raise CliInputError("A module to remove needs a name. To remove the whole Qt, leave --modules out.")
+    staying: Set[str] = set()
+    for record, facts in records:
+        if facts.get("module") not in modules:
+            try:
+                staying.update(brought_by(record, facts))
+            except OSError as e:
+                raise CliInputError(
+                    f"The record '{record}' has no list of its files, so aqt cannot tell which files "
+                    "a module shares with it. Install that Qt again, and then remove the module."
+                ) from e
+    inside = qt_path + os.sep
+    for module in dict.fromkeys(modules):
+        leaving = [(record, facts) for record, facts in records if facts.get("module") == module]
+        if not leaving:
+            logger.warning(f"{module} is not recorded as installed in {qt_path}; nothing to remove")
+            continue
+        removed = 0
+        folders: Set[str] = set()
+        for record, facts in leaving:
+            try:
+                paths = brought_by(record, facts)
+            except OSError as e:
+                raise CliInputError(
+                    f"The record of {module} has no list of its files ('{_files_list_of(record)}'). "
+                    "Install the module again, and then remove it."
+                ) from e
+            for path in paths:
+                if not path.startswith(inside) or path in staying:
+                    continue
+                if os.path.islink(path) or os.path.isfile(path):
+                    _remove_file(path)
+                    removed += 1
+                    folder = os.path.dirname(path)
+                else:
+                    folder = path  # A folder that the archive brought, which may hold nothing
+                while folder.startswith(inside) and folder not in folders:
+                    folders.add(folder)
+                    folder = os.path.dirname(folder)
+        # The longest path first, so a folder goes before the folder that holds it
+        for folder in sorted(folders, key=len, reverse=True):
+            if folder in staying:
+                continue
+            try:
+                os.rmdir(folder)
+            except OSError:
+                pass  # It still holds something that is not the module's, or it is gone
+        for record, _facts in leaving:
+            forget(record)
+        logger.info(f"Removed {module} from {qt_path}: {removed} files")
 
 
 def installer(
