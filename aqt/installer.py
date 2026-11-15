@@ -168,6 +168,7 @@ class InstallArgParser(CommonInstallArgParser):
     archives: Optional[List[str]]
     noarchives: bool
     autodesktop: bool
+    host_folder: Optional[str]
 
 
 class InstallToolArgParser(CommonInstallArgParser):
@@ -468,6 +469,8 @@ class Cli:
                 ignored_options.append("--noarchives")
             if getattr(args, "autodesktop", False):
                 ignored_options.append("--autodesktop")
+            if getattr(args, "host_folder", None):
+                ignored_options.append("--host-folder")
             if getattr(args, "archives", None):
                 ignored_options.append("--archives")
             if getattr(args, "timeout", False):
@@ -494,6 +497,15 @@ class Cli:
                 archives.extend(modules)
         nopatch = args.noarchives or (archives is not None and "qtbase" not in archives)  # type: bool
         should_autoinstall: bool = args.autodesktop
+        host_folder: Optional[str] = getattr(args, "host_folder", None)
+        if host_folder is not None:
+            if should_autoinstall:
+                raise CliInputError("Options `--host-folder` and `--autodesktop` are mutually exclusive.")
+            if not re.fullmatch(r"[A-Za-z0-9_.-]+", host_folder) or host_folder in (".", ".."):
+                raise CliInputError(
+                    f"Option `--host-folder` takes the name of a Qt build's folder, such as msvc2022_arm64, "
+                    f"not '{host_folder}'."
+                )
         _version = Version(qt_version)
         base_path = Path(base_dir)
 
@@ -501,7 +513,7 @@ class Cli:
         all_extra = True if modules is not None and "all" in modules else False
 
         expect_desktop_archdir, autodesk_arch = self._get_autodesktop_dir_and_arch(
-            should_autoinstall, os_name, target, base_path, _version, arch
+            should_autoinstall, os_name, target, base_path, _version, arch, host_folder
         )
 
         # Main installation
@@ -1042,6 +1054,14 @@ class Cli:
             help="For Qt6 android, ios, wasm, and msvc_arm64 installations, an additional desktop Qt installation is "
             "required. When enabled, this option installs the required desktop version automatically. "
             "It has no effect when the desktop installation is not required.",
+        )
+        install_qt_parser.add_argument(
+            "--host-folder",
+            metavar="FOLDER",
+            help="For Qt6 android, ios, wasm, and msvc_arm64 installations: the folder of the desktop Qt whose tools "
+            "the installation runs, such as msvc2022_arm64, which is written into its qmake and qtpaths scripts and "
+            "its target_qt.conf. Without it, aqt looks for an installed desktop Qt, and on Windows it takes a MinGW "
+            "build, installed or not. Cannot be combined with --autodesktop.",
         )
         install_qt_parser.add_argument(
             "--use-official-installer",
@@ -1606,6 +1626,7 @@ class Cli:
         base_path: Path,
         version: Version,
         arch: str,
+        host_folder: Optional[str] = None,
     ) -> Tuple[Optional[str], Optional[str]]:
         """Returns expected_desktop_arch_dir, desktop_arch_to_install"""
         is_wasm = arch.startswith("wasm")
@@ -1617,10 +1638,25 @@ class Cli:
             target not in ["ios", "android", "wasm"] and not is_wasm and not is_win_desktop_msvc_arm64
         ):
             # We only need to worry about the desktop directory for Qt6 mobile or wasm installs.
+            if host_folder is not None:
+                self.logger.warning("Option `--host-folder` has no effect: this Qt build needs no desktop Qt.")
             return None, None
 
         # For WASM installations on all_os, we need to choose a default desktop host
         host = Cli._get_effective_os_name(host)
+
+        if host_folder is not None:
+            # The caller names the desktop Qt whose tools this build runs, so none is looked for or guessed
+            host_path = base_path / dir_for_version(version) / host_folder
+            qmake = host_path / "bin" / ("qmake.exe" if host == "windows" else "qmake")
+            if qmake.is_file():
+                self.logger.info(f"Using the desktop Qt at {host_path}, as `--host-folder` names it")
+            else:
+                self.logger.warning(
+                    f"The desktop Qt that `--host-folder` names is not installed at {host_path}; "
+                    f"install it before using this Qt."
+                )
+            return host_folder, None
 
         installed_desktop_arch_dir = QtRepoProperty.find_installed_desktop_qt_dir(host, base_path, version, is_msvc=is_msvc)
         if installed_desktop_arch_dir:

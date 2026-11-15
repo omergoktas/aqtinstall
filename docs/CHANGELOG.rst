@@ -13,6 +13,15 @@ All notable changes to this project will be documented in this file.
 `Unreleased`_
 =============
 
+`v4.2.0`_ (15, Nov. 2026)
+=========================
+
+Added
+-----
+- ``install-qt --host-folder <folder>`` names the desktop Qt whose tools an Android, iOS or
+  WebAssembly build runs, such as ``msvc2022_arm64``. Without it, aqt looks for an installed
+  desktop Qt, and on Windows it takes a MinGW build, installed or not
+
 `v4.1.1`_ (15, Nov. 2026)
 =========================
 
@@ -582,7 +591,8 @@ Security
 * Check Update.xml file with SHA256 hash (#493)
 
 
-.. _Unreleased: https://github.com/omergoktas/aqtinstall/compare/v4.1.1...HEAD
+.. _Unreleased: https://github.com/omergoktas/aqtinstall/compare/v4.2.0...HEAD
+.. _v4.2.0: https://github.com/omergoktas/aqtinstall/compare/v4.1.1...v4.2.0
 .. _v4.1.1: https://github.com/omergoktas/aqtinstall/compare/v4.1.0...v4.1.1
 .. _v4.1.0: https://github.com/omergoktas/aqtinstall/compare/v4.0.0...v4.1.0
 .. _v4.0.0: https://github.com/omergoktas/aqtinstall/compare/v3.3.0...v4.0.0

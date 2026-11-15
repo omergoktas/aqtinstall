@@ -501,6 +501,65 @@ def test_get_autodesktop_dir_and_arch_non_android(
             assert any("You can install" in line for line in err_lines), "Expected install instruction message."
 
 
+@pytest.mark.parametrize("installed", (True, False))
+def test_get_autodesktop_dir_and_arch_host_folder(monkeypatch, capsys, installed: bool):
+    # The named desktop Qt is used, though a MinGW build is installed, and no server is asked for a default
+    def no_server(*args, **kwargs):
+        raise AssertionError("a server was asked for the default desktop Qt")
+
+    monkeypatch.setattr(MetadataFactory, "fetch_default_desktop_arch", no_server)
+    cli = Cli()
+    cli._setup_settings()
+    with TemporaryDirectory() as temp_dir:
+        base_dir = Path(temp_dir)
+        mingw_qmake = base_dir / "6.12.0" / "mingw_64" / "bin" / "qmake.exe"
+        mingw_qmake.parent.mkdir(parents=True)
+        mingw_qmake.write_text("exe file")
+        if installed:
+            msvc_qmake = base_dir / "6.12.0" / "msvc2022_arm64" / "bin" / "qmake.exe"
+            msvc_qmake.parent.mkdir(parents=True)
+            msvc_qmake.write_text("exe file")
+        result = cli._get_autodesktop_dir_and_arch(
+            False, "windows", "android", base_dir, Version("6.12.0"), "android_arm64_v8a", "msvc2022_arm64"
+        )
+    assert result == ("msvc2022_arm64", None)
+    err = capsys.readouterr()[1]
+    if installed:
+        assert "Using the desktop Qt at" in err
+    else:
+        assert "The desktop Qt that `--host-folder` names is not installed" in err
+
+
+def test_get_autodesktop_dir_and_arch_host_folder_desktop(capsys):
+    # A desktop build needs no desktop Qt, so the option only gets a warning
+    cli = Cli()
+    cli._setup_settings()
+    result = cli._get_autodesktop_dir_and_arch(
+        False, "linux", "desktop", Path("."), Version("6.12.0"), "linux_gcc_64", "gcc_64"
+    )
+    assert result == (None, None)
+    assert "Option `--host-folder` has no effect" in capsys.readouterr()[1]
+
+
+@pytest.mark.parametrize(
+    "extra, message",
+    (
+        (["--host-folder", "msvc2022_arm64", "--autodesktop"], "mutually exclusive"),
+        (["--host-folder", "../msvc2022_arm64"], "takes the name of a Qt build's folder"),
+        (["--host-folder", ".."], "takes the name of a Qt build's folder"),
+    ),
+)
+def test_cli_install_qt_host_folder_errors(monkeypatch, capsys, extra: List[str], message: str):
+    def no_download(*args, **kwargs):
+        raise AssertionError("the install went on to download")
+
+    monkeypatch.setattr("aqt.installer.QtArchives", no_download)
+    cli = Cli()
+    cli._setup_settings()
+    assert cli.run(["install-qt", "android_arm64_v8a", "android", "6.12.0", *extra]) == 1
+    assert message in capsys.readouterr()[1]
+
+
 @pytest.mark.parametrize(
     "folder, target, expected",
     (

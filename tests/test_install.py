@@ -791,6 +791,55 @@ def tool_archive(host: str, tool_name: str, variant: str, date: datetime = datet
                 r"INFO    : Time elapsed: .* second"
             ),
         ),
+        (
+            # --host-folder names the desktop Qt, so no MinGW build is looked for or guessed
+            "install-qt windows android 6.1.0 android_armv7 --host-folder msvc2019_64".split(),
+            "windows",
+            "android",
+            "6.1.0",
+            {"std": "android_armv7"},
+            {"std": "android_armv7"},
+            {"std": "windows_x86/android/qt6_610_armv7/Updates.xml"},
+            {
+                "std": [
+                    MockArchive(
+                        filename_7z="qtbase-windows-android_armv7.7z",
+                        update_xml_name="qt.qt6.610.android_armv7",
+                        contents=(
+                            PatchedFile(
+                                filename="bin/target_qt.conf",
+                                unpatched_content="Prefix=/Users/qt/work/install/target\n"
+                                "HostPrefix=../../\n"
+                                "HostData=target\n",
+                                patched_content="Prefix={base_dir}{sep}6.1.0{sep}android_armv7{sep}target\n"
+                                "HostPrefix=../../msvc2019_64\n"
+                                "HostData=../android_armv7\n",
+                            ),
+                            PatchedFile(
+                                filename="bin/qmake.bat",
+                                unpatched_content="... blah blah blah ...\n"
+                                "/Users/qt/work/install/bin\n"
+                                "... blah blah blah ...\n",
+                                patched_content="... blah blah blah ...\n"
+                                "{base_dir}\\6.1.0\\msvc2019_64\\bin\n"
+                                "... blah blah blah ...\n",
+                            ),
+                        ),
+                    ),
+                ]
+            },
+            re.compile(
+                r"^INFO    : aqtinstall\(aqt\) v.* on Python 3.*\n"
+                r"WARNING : The desktop Qt that `--host-folder` names is not installed at .*msvc2019_64; "
+                r"install it before using this Qt\.\n"
+                r"INFO    : Downloading qtbase...\n"
+                r"Finished installation of qtbase-windows-android_armv7.7z in .*\n"
+                r"INFO    : Patching .*6\.1\.0[/\\]android_armv7[/\\]bin[/\\]qmake.bat\n"
+                r"INFO    : Patching .*6\.1\.0[/\\]android_armv7[/\\]bin[/\\]target_qt.conf\n"
+                r"INFO    : Finished installation\n"
+                r"INFO    : Time elapsed: .* second"
+            ),
+        ),
         # --autodesktop test edited
         (
             "install-qt windows desktop 6.5.2 win64_msvc2019_arm64 --autodesktop".split(),

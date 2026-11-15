@@ -6,14 +6,14 @@ It is not on PyPI. Install a version by its tag from this repository:
 
 .. code-block:: console
 
-    pipx install git+https://github.com/omergoktas/aqtinstall@v4.1.1
+    pipx install git+https://github.com/omergoktas/aqtinstall@v4.2.0
 
 or as a tool of `mise`_, in a ``mise.toml``:
 
 .. code-block:: toml
 
     [tools]
-    "pipx:omergoktas/aqtinstall" = "v4.1.1"
+    "pipx:omergoktas/aqtinstall" = "v4.2.0"
 
 What it has that aqtinstall 3.3 does not:
 
@@ -25,6 +25,9 @@ What it has that aqtinstall 3.3 does not:
   ``aqt uninstall-qt`` removes a Qt, or only some of its modules.
 - ``aqt install-qt`` and ``aqt uninstall-qt`` also take a Qt build by its folder, such as
   ``gcc_arm64``, in place of the host and the architecture.
+- ``aqt install-qt --host-folder`` names the desktop Qt that an Android, iOS or WebAssembly Qt
+  runs its tools from, such as ``msvc2022_arm64``, where aqt would otherwise guess, and on Windows
+  always guess a MinGW build.
 - No ``aqtinstall.log`` is written unless ``AQT_LOG_FILE`` names one, and nothing is made in the home folder.
 - It knows the iOS kits of Qt 6.12.
 
