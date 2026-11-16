@@ -932,6 +932,21 @@ def get_hash(archive_path: str, algorithm: str, timeout: Tuple[float, float]) ->
     )
 
 
+def file_has_hash(path: Path, algorithm: str, expected: bytes) -> bool:
+    """
+    Tells whether the file at `path` exists and its checksum, by `algorithm`, is `expected`, the
+    raw bytes that `get_hash` returns. The file is read in pieces, so a large archive does not
+    have to fit in memory.
+    """
+    if not path.is_file():
+        return False
+    hash = hashlib.new(algorithm, usedforsecurity=False)
+    with open(path, "rb") as f:
+        for piece in iter(lambda: f.read(1024 * 1024), b""):
+            hash.update(piece)
+    return hash.digest() == expected
+
+
 def altlink(url: str, alt: str) -> str:
     """
     Blacklisting redirected(alt) location based on Settings. Blacklist configuration.

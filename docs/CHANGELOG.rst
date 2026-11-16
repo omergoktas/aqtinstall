@@ -13,6 +13,19 @@ All notable changes to this project will be documented in this file.
 `Unreleased`_
 =============
 
+`v4.3.0`_ (16, Nov. 2026)
+=========================
+
+Added
+-----
+- With ``--keep``, an archive that is already in the archive folder and whose checksum
+  matches the one Qt's server gives is installed from there instead of being downloaded
+  again, so ``--keep --archive-dest <folder>`` makes the folder a cache of downloads
+
+Changed
+-------
+- ``--keep`` no longer downloads and unpacks an archive that is installed already
+
 `v4.2.0`_ (15, Nov. 2026)
 =========================
 
@@ -591,7 +604,8 @@ Security
 * Check Update.xml file with SHA256 hash (#493)
 
 
-.. _Unreleased: https://github.com/omergoktas/aqtinstall/compare/v4.2.0...HEAD
+.. _Unreleased: https://github.com/omergoktas/aqtinstall/compare/v4.3.0...HEAD
+.. _v4.3.0: https://github.com/omergoktas/aqtinstall/compare/v4.2.0...v4.3.0
 .. _v4.2.0: https://github.com/omergoktas/aqtinstall/compare/v4.1.1...v4.2.0
 .. _v4.1.1: https://github.com/omergoktas/aqtinstall/compare/v4.1.0...v4.1.1
 .. _v4.1.0: https://github.com/omergoktas/aqtinstall/compare/v4.0.0...v4.1.0

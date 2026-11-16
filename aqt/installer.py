@@ -69,6 +69,7 @@ from aqt.helper import (
     download_installer,
     downloadBinaryFile,
     extract_auth,
+    file_has_hash,
     get_hash,
     get_os_name,
     get_qt_installer_name,
@@ -2119,8 +2120,9 @@ def installer(
         share_servers_known(servers_known)
     if budget is not None:
         share_connection_budget(budget)
-    # An archive that is to be kept has to be downloaded whatever is installed
-    if not keep and _is_installed(record, base_dir):
+    # Kept or not, an installed archive is neither downloaded nor unpacked again: --keep keeps
+    # what a run downloads, it does not make a run download what is installed
+    if _is_installed(record, base_dir):
         logger.info("Already installed: {}".format(qt_package.archive))
         qh.flush()
         qh.close()
@@ -2130,17 +2132,23 @@ def installer(
     timeout = (Settings.connection_timeout, Settings.response_timeout)
     hash = get_hash(qt_package.archive_path, Settings.hash_algorithm, timeout) if not Settings.ignore_hash else None
 
-    def download_bin(_base_url):
-        url = posixpath.join(_base_url, qt_package.archive_path)
-        logger.debug("Download URL: {}".format(url))
-        return downloadBinaryFile(url, archive, Settings.hash_algorithm, hash, timeout)
+    # A kept archive that an earlier run left in the archive folder serves again, once its
+    # checksum matches the one Qt's server gives, so the folder works as a cache of downloads
+    if keep and hash and file_has_hash(archive, Settings.hash_algorithm, hash):
+        logger.info("Taken from the archive folder: {}".format(qt_package.archive))
+    else:
 
-    retry_on_errors(
-        action=lambda: retry_on_bad_connection(download_bin, base_url),
-        acceptable_errors=(ArchiveChecksumError,),
-        num_retries=Settings.max_retries_on_checksum_error,
-        name=f"Downloading {name}",
-    )
+        def download_bin(_base_url):
+            url = posixpath.join(_base_url, qt_package.archive_path)
+            logger.debug("Download URL: {}".format(url))
+            return downloadBinaryFile(url, archive, Settings.hash_algorithm, hash, timeout)
+
+        retry_on_errors(
+            action=lambda: retry_on_bad_connection(download_bin, base_url),
+            acceptable_errors=(ArchiveChecksumError,),
+            num_retries=Settings.max_retries_on_checksum_error,
+            name=f"Downloading {name}",
+        )
     gc.collect()
 
     is_7z = _is_7zfile(archive)

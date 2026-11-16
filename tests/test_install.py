@@ -2245,11 +2245,54 @@ def test_install_installer_passes_over_an_archive_installed_already(monkeypatch,
     assert tool.read_bytes() == b"a tool"
     # A second run finds the archive installed, and downloads nothing
     assert install_one_file_archive(monkeypatch, tmp_path, qt_package) == []
-    # An archive that is to be kept is downloaded whatever is installed
-    assert install_one_file_archive(monkeypatch, tmp_path, qt_package, keep=True) == ["downloaded"]
+    # Nor when it is to be kept: --keep keeps what a run downloads
+    assert install_one_file_archive(monkeypatch, tmp_path, qt_package, keep=True) == []
     # Once its file is gone, the archive is installed anew
     tool.unlink()
     assert install_one_file_archive(monkeypatch, tmp_path, qt_package) == ["downloaded"]
+    assert tool.read_bytes() == b"a tool"
+
+
+def test_install_installer_takes_a_kept_archive_from_the_archive_folder(monkeypatch, tmp_path):
+    qt_package = make_one_file_archive(tmp_path)
+    made = (tmp_path / "made.7z").read_bytes()
+    tool = tmp_path / "out" / "6.9.9" / "gcc_64" / "bin" / "tool"
+    # Without a checksum from the server, a kept archive is downloaded as before
+    assert install_one_file_archive(monkeypatch, tmp_path, qt_package, keep=True) == ["downloaded"]
+    assert (tmp_path / "archive.7z").read_bytes() == made
+
+    def install_with_hash(digest: bytes) -> List[str]:
+        happened: List[str] = []
+
+        def mock_download(url, out, *args):
+            happened.append("downloaded")
+            shutil.copy(tmp_path / "made.7z", out)
+
+        monkeypatch.setattr("aqt.installer.get_hash", lambda *args, **kwargs: digest)
+        monkeypatch.setattr("aqt.installer.downloadBinaryFile", mock_download)
+        installer(
+            qt_package=qt_package,
+            base_dir=str(tmp_path / "out"),
+            command=None,
+            queue=MockMultiprocessingManager.Queue(),
+            archive_dest=tmp_path,
+            settings_ini=Settings.configfile,
+            keep=True,
+        )
+        return happened
+
+    right = hashlib.sha256(made).digest()
+    # Installed: nothing to do
+    assert install_with_hash(right) == []
+    # Not installed, with the kept archive: installed from it, with no download
+    tool.unlink()
+    assert install_with_hash(right) == []
+    assert tool.read_bytes() == b"a tool"
+    # A kept archive whose checksum differs is downloaded again
+    (tmp_path / "archive.7z").write_bytes(b"not the archive")
+    tool.unlink()
+    assert install_with_hash(right) == ["downloaded"]
+    assert (tmp_path / "archive.7z").read_bytes() == made
     assert tool.read_bytes() == b"a tool"
 
 

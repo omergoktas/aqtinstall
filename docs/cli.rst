@@ -421,6 +421,11 @@ are described here:
     If you do not specify a download destination, aqt will place these files in
     the current working directory.
 
+    An archive that is already in that folder, and whose checksum matches the one
+    Qt's server gives, is installed from there instead of being downloaded again,
+    so the folder serves as a cache of downloads, such as one that a CI service
+    restores. An archive that is installed already is neither downloaded nor kept.
+
 .. option:: --archive-dest <path>
 
     Set the destination path for downloaded archives (temp directory by default).
