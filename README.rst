@@ -6,14 +6,14 @@ It is not on PyPI. Install a version by its tag from this repository:
 
 .. code-block:: console
 
-    pipx install git+https://github.com/omergoktas/aqtinstall@v4.3.0
+    pipx install git+https://github.com/omergoktas/aqtinstall@v4.4.0
 
 or as a tool of `mise`_, in a ``mise.toml``:
 
 .. code-block:: toml
 
     [tools]
-    "pipx:omergoktas/aqtinstall" = "v4.3.0"
+    "pipx:omergoktas/aqtinstall" = "v4.4.0"
 
 What it has that aqtinstall 3.3 does not:
 
@@ -30,6 +30,10 @@ What it has that aqtinstall 3.3 does not:
   always guess a MinGW build.
 - No ``aqtinstall.log`` is written unless ``AQT_LOG_FILE`` names one, and nothing is made in the home folder.
 - It knows the iOS kits of Qt 6.12.
+- It never uses an ``Updates.xml`` that it cannot check: when the file's checksum cannot be
+  downloaded, the install stops, unless ``--UNSAFE-allow-missing-hash`` allows it.
+- Every package it takes, the dependencies of its dependencies too, is pinned to one version, so
+  an install of a tag gets the same packages every time.
 
 The `ChangeLog`_ has the rest.
 
@@ -71,7 +75,7 @@ Requirements
 ------------
 
 - Minimum Python version:
-    3.10
+    3.12
 
 - Recommended Python version:
     3.14 (frequently tested on)

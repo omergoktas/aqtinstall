@@ -13,6 +13,25 @@ All notable changes to this project will be documented in this file.
 `Unreleased`_
 =============
 
+`v4.4.0`_ (17, Nov. 2026)
+=========================
+
+Added
+-----
+- ``--UNSAFE-allow-missing-hash`` lets an install use an ``Updates.xml`` whose checksum cannot
+  be downloaded, without checking it
+
+Changed
+-------
+- An ``Updates.xml`` whose checksum cannot be downloaded stops the install with an error, where
+  aqt used to warn and use the file unchecked. A file that does not exist, such as the
+  ``Updates.xml`` of a Qt version that was never released, is still reported as such
+- Every package aqt takes is pinned to one version, the dependencies of its dependencies and
+  the packages that build it too, so an install of a tag gets the same packages every time
+- Python 3.12 or newer is required, since one of the pinned packages, soupsieve 4.1.1, needs
+  Python 3.11.5, and Python 3.10 has reached its end of life
+- The workflows name every action by its commit
+
 `v4.3.0`_ (16, Nov. 2026)
 =========================
 
@@ -604,7 +623,8 @@ Security
 * Check Update.xml file with SHA256 hash (#493)
 
 
-.. _Unreleased: https://github.com/omergoktas/aqtinstall/compare/v4.3.0...HEAD
+.. _Unreleased: https://github.com/omergoktas/aqtinstall/compare/v4.4.0...HEAD
+.. _v4.4.0: https://github.com/omergoktas/aqtinstall/compare/v4.3.0...v4.4.0
 .. _v4.3.0: https://github.com/omergoktas/aqtinstall/compare/v4.2.0...v4.3.0
 .. _v4.2.0: https://github.com/omergoktas/aqtinstall/compare/v4.1.1...v4.2.0
 .. _v4.1.1: https://github.com/omergoktas/aqtinstall/compare/v4.1.0...v4.1.1
