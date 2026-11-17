@@ -73,6 +73,30 @@ class ChecksumDownloadFailure(ArchiveDownloadError):
         )
 
 
+class MissingChecksumError(AqtException):
+    """
+    A file exists on the server, but its checksum could not be downloaded, so the file cannot be
+    checked, and nothing allowed using it unchecked.
+
+    It is no ArchiveDownloadError on purpose: callers read an ArchiveDownloadError as a file that
+    does not exist, and would report this one as an unknown Qt version or tool.
+    """
+
+    def __init__(self, *args, suggested_action: Optional[List[str]] = None, **kwargs) -> None:
+        if suggested_action is None:
+            suggested_action = []
+        suggested_action.extend(
+            [
+                "Check your internet connection",
+                "If this Qt version was released very recently, try again later: "
+                "its checksums may not be on Qt's server yet",
+                f"Consider modifying `mirrors.trusted_mirrors` in settings.ini (see {DOCS_CONFIG})",
+                "If you trust the server, --UNSAFE-allow-missing-hash uses such a file without a check",
+            ]
+        )
+        super(MissingChecksumError, self).__init__(*args, suggested_action=suggested_action, **kwargs)
+
+
 class ArchiveConnectionError(AqtException):
     pass
 

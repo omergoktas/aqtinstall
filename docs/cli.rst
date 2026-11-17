@@ -477,6 +477,14 @@ are described here:
     It does not edit the configuration file and only affects the current session. It will print warnings.
     Useful if the Qt official mirror is down and you trust a third-party mirror.
 
+.. option:: --UNSAFE-allow-missing-hash
+
+    UNSAFE, use at your own risk.
+    When the checksum of an ``Updates.xml`` cannot be downloaded, aqt stops with an error, since
+    it cannot check the file. With this option it uses the file without a check instead, and
+    prints a warning. It only affects the current session, and no setting in ``settings.ini``
+    turns it on.
+
 
 .. _install archives flag:
 .. option:: --archives <list of archives>

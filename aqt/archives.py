@@ -33,7 +33,14 @@ from xml.etree.ElementTree import Element  # noqa
 
 from defusedxml import ElementTree
 
-from aqt.exceptions import ArchiveDownloadError, ArchiveListError, ChecksumDownloadFailure, CliInputError, NoPackageFound
+from aqt.exceptions import (
+    ArchiveDownloadError,
+    ArchiveListError,
+    ChecksumDownloadFailure,
+    CliInputError,
+    MissingChecksumError,
+    NoPackageFound,
+)
 from aqt.helper import Settings, effective_package_name, get_hash, getUrl, ssplit
 from aqt.metadata import ArchiveId, MetadataFactory, QtRepoProperty, Version
 
@@ -572,23 +579,36 @@ class QtArchives:
         return results
 
     def _download_update_xml(self, update_xml_path: str, silent: bool = False) -> Optional[str]:
-        """Hook for unit test."""
-        if not Settings.ignore_hash:
+        """
+        Downloads an Updates.xml and checks it against the checksum on Qt's server. With `silent`,
+        a file that does not exist gives None instead of an ArchiveDownloadError.
+        """
+        url = posixpath.join(self.base, update_xml_path)
+        if Settings.ignore_hash:
+            return getUrl(url, self.timeout, None)
+        try:
+            xml_hash = get_hash(update_xml_path, Settings.hash_algorithm, self.timeout)
+        except ChecksumDownloadFailure as e:
+            # Qt's server gives no checksum for a file that does not exist, such as the Updates.xml
+            # of a Qt version or an extension it never released, and none when the checksum cannot
+            # be reached. Downloading the file tells the two apart, and the file is used without a
+            # check only when --UNSAFE-allow-missing-hash asks for that.
             try:
-                xml_hash: Optional[bytes] = get_hash(update_xml_path, Settings.hash_algorithm, self.timeout)
-            except ChecksumDownloadFailure:
+                text = getUrl(url, self.timeout, None)
+            except ArchiveDownloadError:
                 if silent:
                     return None
-                else:
-                    self.logger.warning(
-                        "Failed to download checksum for the file '{}'. This may happen on unofficial mirrors.".format(
-                            update_xml_path
-                        )
-                    )
-                    xml_hash = None
-        else:
-            xml_hash = None
-        return getUrl(posixpath.join(self.base, update_xml_path), self.timeout, xml_hash)
+                raise
+            if not Settings.allow_missing_hash:
+                raise MissingChecksumError(
+                    f"The checksum of the file '{update_xml_path}' could not be downloaded, so the file cannot be checked."
+                ) from e
+            self.logger.warning(
+                f"Using the file '{update_xml_path}' without a check: its checksum could not be downloaded, "
+                "and --UNSAFE-allow-missing-hash allows that."
+            )
+            return text
+        return getUrl(url, self.timeout, xml_hash)
 
     def _parse_update_xml(
         self, os_target_folder: str, update_xml_text: str, target_packages: Optional[ModuleToPackage]

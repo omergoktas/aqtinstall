@@ -17,7 +17,13 @@ from aqt.archives import (
     ToolArchives,
     Updates,
 )
-from aqt.exceptions import ArchiveListError, NoPackageFound
+from aqt.exceptions import (
+    ArchiveDownloadError,
+    ArchiveListError,
+    ChecksumDownloadFailure,
+    MissingChecksumError,
+    NoPackageFound,
+)
 from aqt.helper import Settings
 from aqt.metadata import Version
 
@@ -771,3 +777,73 @@ def test_missing_extension_version(monkeypatch, missing, qualified):
             modules=["qtpdf@6.140.0" if qualified else "qtpdf"],
             is_include_base_package=False,
         )
+
+
+def _no_checksum(*args, **kwargs):
+    raise ChecksumDownloadFailure("Failed to download checksum")
+
+
+def _no_file(url, *args, **kwargs):
+    raise ArchiveDownloadError(f"Failed to retrieve file at {url}\nServer response code: 404, reason: Not Found")
+
+
+@pytest.fixture()
+def windows_5140_xml():
+    return (Path(__file__).parent / "data" / "windows-5140-update.xml").read_text("utf-8")
+
+
+@pytest.fixture()
+def allow_missing_hash():
+    Settings.set_allow_missing_hash_for_session(True)
+    yield
+    Settings.set_allow_missing_hash_for_session(False)
+
+
+@pytest.mark.parametrize(
+    "archives_class, init_args",
+    (
+        (QtArchives, ("windows", "desktop", "5.14.0", "win64_mingw73", Settings.baseurl)),
+        (ToolArchives, ("windows", "desktop", "tools_qtifw", Settings.baseurl)),
+    ),
+)
+def test_update_xml_without_checksum_is_an_error(monkeypatch, windows_5140_xml, archives_class, init_args):
+    monkeypatch.setattr("aqt.archives.getUrl", lambda *args, **kwargs: windows_5140_xml)
+    monkeypatch.setattr("aqt.archives.get_hash", _no_checksum)
+
+    with pytest.raises(MissingChecksumError) as error:
+        archives_class(*init_args)
+    assert "could not be downloaded, so the file cannot be checked" in format(error.value)
+    assert "--UNSAFE-allow-missing-hash" in format(error.value)
+
+
+def test_update_xml_without_checksum_with_the_flag(monkeypatch, caplog, windows_5140_xml, allow_missing_hash):
+    monkeypatch.setattr("aqt.archives.getUrl", lambda *args, **kwargs: windows_5140_xml)
+    monkeypatch.setattr("aqt.archives.get_hash", _no_checksum)
+
+    qt_archives = QtArchives("windows", "desktop", "5.14.0", "win64_mingw73", Settings.baseurl)
+    assert qt_archives.archives
+    assert "without a check: its checksum could not be downloaded" in caplog.text
+
+
+def test_missing_update_xml_without_checksum_is_an_unknown_version(monkeypatch):
+    monkeypatch.setattr("aqt.archives.getUrl", _no_file)
+    monkeypatch.setattr("aqt.archives.get_hash", _no_checksum)
+
+    with pytest.raises(ArchiveListError) as error:
+        QtArchives("windows", "desktop", "5.16.0", "win64_mingw73", Settings.baseurl)
+    assert format(error.value).startswith("Failed to locate XML data for Qt version '5.16.0'.")
+
+
+def test_probed_update_xml_without_checksum(monkeypatch, windows_5140_xml):
+    monkeypatch.setattr("aqt.archives.getUrl", lambda *args, **kwargs: windows_5140_xml)
+    monkeypatch.setattr("aqt.archives.get_hash", lambda *args, **kwargs: b"")
+    qt_archives = QtArchives("windows", "desktop", "5.14.0", "win64_mingw73", Settings.baseurl)
+
+    # A probe, such as for an extension, refuses a file that exists without a checksum
+    monkeypatch.setattr("aqt.archives.get_hash", _no_checksum)
+    with pytest.raises(MissingChecksumError):
+        qt_archives._download_update_xml("online/qtsdkrepository/some/Updates.xml", silent=True)
+
+    # and finds nothing where the file does not exist
+    monkeypatch.setattr("aqt.archives.getUrl", _no_file)
+    assert qt_archives._download_update_xml("online/qtsdkrepository/some/Updates.xml", silent=True) is None

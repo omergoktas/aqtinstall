@@ -650,3 +650,15 @@ def test_cli_folder_errors(capsys, cmd: str, expect_msg: str):
     out, err = capsys.readouterr()
     assert out == ""
     assert err.rstrip().endswith(expect_msg)
+
+
+def test_cli_allow_missing_hash_lasts_one_command():
+    cli = Cli()
+    args = cli.parser.parse_args(["install-qt", "linux", "desktop", "6.12.0", "--UNSAFE-allow-missing-hash"])
+    cli._setup_settings(args)
+    assert Settings.allow_missing_hash
+
+    # Never on by default, and never carried over to the next command
+    args = cli.parser.parse_args(["install-qt", "linux", "desktop", "6.12.0"])
+    cli._setup_settings(args)
+    assert not Settings.allow_missing_hash

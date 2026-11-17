@@ -1099,6 +1099,7 @@ class SettingsClass:
         "configfile": None,
         "loggingconf": None,
         "_ignore_hash_override": None,
+        "_allow_missing_hash": False,
         "_temp_dir": None,
         "_lock": Lock(),
     }
@@ -1107,6 +1108,7 @@ class SettingsClass:
         self.config: Optional[ConfigParser]
         self._lock: Lock
         self._ignore_hash_override: Optional[bool] = None
+        self._allow_missing_hash: bool
         self._temp_dir: Optional[str]
         self._initialize()
 
@@ -1134,6 +1136,14 @@ class SettingsClass:
     def set_ignore_hash_for_session(self, value: bool) -> None:
         """Override the INSECURE_NOT_FOR_PRODUCTION_ignore_hash setting for the current session without modifying config."""
         self._ignore_hash_override = value
+
+    def set_allow_missing_hash_for_session(self, value: bool) -> None:
+        """
+        Sets whether an Updates.xml whose checksum cannot be downloaded is used without a check, for
+        the current session. Only the --UNSAFE-allow-missing-hash flag turns it on; settings.ini has
+        no such option, so it is never on by default.
+        """
+        self._allow_missing_hash = value
 
     def load_settings(self, file: Optional[Union[str, TextIO]] = None) -> None:
         if self.config is None:
@@ -1256,6 +1266,10 @@ class SettingsClass:
         if self._ignore_hash_override is not None:
             return self._ignore_hash_override
         return self.config.getboolean("requests", "INSECURE_NOT_FOR_PRODUCTION_ignore_hash", fallback=False)
+
+    @property
+    def allow_missing_hash(self) -> bool:
+        return self._allow_missing_hash
 
     @property
     def backoff_factor(self):

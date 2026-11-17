@@ -1516,6 +1516,12 @@ class Cli:
             action="store_true",
             help="UNSAFE: Skip hash verification of downloaded files. Use at your own risk.",
         )
+        subparser.add_argument(
+            "--UNSAFE-allow-missing-hash",
+            action="store_true",
+            help="UNSAFE: Use an Updates.xml whose checksum cannot be downloaded without checking it, "
+            "instead of stopping with an error. Use at your own risk.",
+        )
 
     def _set_module_options(self, subparser):
         subparser.add_argument("-m", "--modules", nargs="*", help="Specify extra modules to install")
@@ -1587,6 +1593,14 @@ class Cli:
                 "************************************************************************************************"
             )
             Settings.set_ignore_hash_for_session(True)
+
+        # Set on every run, so that one command's flag never carries over to the next in the same process
+        allow_missing_hash = bool(getattr(args, "UNSAFE_allow_missing_hash", False))
+        if allow_missing_hash:
+            self.logger.warning(
+                "An Updates.xml whose checksum cannot be downloaded will be used without a check. This is UNSAFE."
+            )
+        Settings.set_allow_missing_hash_for_session(allow_missing_hash)
 
     @staticmethod
     def _validate_version_str(
