@@ -2,18 +2,30 @@ Another Qt installer(aqt)
 =========================
 
 This is Ömer Göktaş's fork of `aqtinstall`_, kept and versioned on its own from 4.0.0 on.
-It is not on PyPI. Install a version by its tag from this repository:
-
-.. code-block:: console
-
-    pipx install git+https://github.com/omergoktas/aqtinstall@v4.4.0
-
-or as a tool of `mise`_, in a ``mise.toml``:
+It is not on PyPI. Each release carries ``aqt`` as a standalone program for Linux, macOS and
+Windows, each on AMD64 and ARM64, which needs no Python: ``aqt-linux-amd64``, ``aqt-linux-arm64``,
+``aqt-macos-amd64``, ``aqt-macos-arm64``, ``aqt-windows-amd64.exe`` and ``aqt-windows-arm64.exe``.
+`mise`_ installs it from the release, in a ``mise.toml``:
 
 .. code-block:: toml
 
-    [tools]
-    "pipx:omergoktas/aqtinstall" = "v4.4.0"
+    [tools."github:omergoktas/aqtinstall"]
+    version = "4.4.1"
+    bin = "aqt"
+
+    [tools."github:omergoktas/aqtinstall".platforms]
+    linux-x64 = { asset_pattern = "aqt-linux-amd64" }
+    linux-arm64 = { asset_pattern = "aqt-linux-arm64" }
+    macos-x64 = { asset_pattern = "aqt-macos-amd64" }
+    macos-arm64 = { asset_pattern = "aqt-macos-arm64" }
+    windows-x64 = { asset_pattern = "aqt-windows-amd64.exe" }
+    windows-arm64 = { asset_pattern = "aqt-windows-arm64.exe" }
+
+Or install a version by its tag from this repository, which needs Python and git:
+
+.. code-block:: console
+
+    pipx install git+https://github.com/omergoktas/aqtinstall@v4.4.1
 
 What it has that aqtinstall 3.3 does not:
 

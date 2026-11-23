@@ -13,6 +13,21 @@ All notable changes to this project will be documented in this file.
 `Unreleased`_
 =============
 
+`v4.4.1`_ (23, Nov. 2026)
+=========================
+
+Added
+-----
+- Each release carries ``aqt`` as a standalone program for Linux, macOS and Windows, each on AMD64
+  and ARM64, built with PyInstaller, which needs no Python and no git to install
+
+Changed
+-------
+- The release workflow builds those programs on six runners, checks that each starts and names
+  the release's version, and installs PyInstaller and what it brings pinned by their hashes. It no
+  longer builds programs for x86 Windows, no longer fills a "Continuous" release, and attaches
+  the programs with ``gh`` in place of a third-party action
+
 `v4.4.0`_ (17, Nov. 2026)
 =========================
 
@@ -623,7 +638,8 @@ Security
 * Check Update.xml file with SHA256 hash (#493)
 
 
-.. _Unreleased: https://github.com/omergoktas/aqtinstall/compare/v4.4.0...HEAD
+.. _Unreleased: https://github.com/omergoktas/aqtinstall/compare/v4.4.1...HEAD
+.. _v4.4.1: https://github.com/omergoktas/aqtinstall/compare/v4.4.0...v4.4.1
 .. _v4.4.0: https://github.com/omergoktas/aqtinstall/compare/v4.3.0...v4.4.0
 .. _v4.3.0: https://github.com/omergoktas/aqtinstall/compare/v4.2.0...v4.3.0
 .. _v4.2.0: https://github.com/omergoktas/aqtinstall/compare/v4.1.1...v4.2.0
