@@ -1,0 +1,8 @@
+# What the release workflow builds the standalone programs with. Compile it
+# into standalone-requirements.txt, with every package's hashes, by
+# `uv pip compile tools/standalone-requirements.in --universal --python-version 3.12 --generate-hashes -o tools/standalone-requirements.txt`
+pyinstaller==6.22.3
+pyinstaller-hooks-contrib==2026.10
+# The versions the package's own build pins in pyproject.toml.
+setuptools==84.2.1
+packaging==26.3

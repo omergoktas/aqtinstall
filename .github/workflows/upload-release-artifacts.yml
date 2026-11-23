@@ -1,105 +1,107 @@
-# This will only run automatically when releases have been created,
-# and will only upload binaries to previously-created releases.
-# When run manually, it will overwrite the previous release binary
+# Builds aqt as one standalone program for each of six platforms with
+# PyInstaller, checks that each starts and names the release's version, and
+# attaches them to the release, so that an installer such as mise installs aqt
+# with no Python and no git. A release starts it; started by hand, it builds
+# the tag given and replaces that release's programs.
 
 name: Upload release artifacts
 
 on:
   release:
     types:
-      - created
+      - published
   workflow_dispatch:
+    inputs:
+      tag:
+        description: The release's tag, such as v4.4.0
+        required: true
+
+permissions:
+  contents: read
+
+# One run per tag at a time; a second waits instead of cancelling the first.
+concurrency:
+  group: standalone-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+  queue: max
 
 jobs:
-  build-standalone:
-    runs-on: ${{ matrix.system.os }}
+  build:
+    name: Build for ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
+      fail-fast: false
       matrix:
-        system: [
-          {os: windows-2025, arch: x86, output_file: 'aqt_x86.exe', primary_artifact: '', secondary_artifact: 'aqt_x86.exe'},
-          {os: windows-2025, arch: x64, output_file: 'aqt_x64.exe', primary_artifact: 'aqt.exe', secondary_artifact: 'aqt_x64.exe'},
-          {os: windows-11-arm, arch: arm64, output_file: 'aqt_arm64.exe', primary_artifact: '', secondary_artifact: 'aqt_arm64.exe'},
-          {os: macos-15-intel, arch: x64, output_file: 'aqt_x64', primary_artifact: 'aqt-macos', secondary_artifact: 'aqt-macos_x64'},
-          {os: macos-15, arch: arm64, output_file: 'aqt_arm64', primary_artifact: '', secondary_artifact: 'aqt-macos_arm64'}
-        ]
-        py: [3.14]
+        include:
+          # Ubuntu 22.04's glibc 2.35, so the program runs on that release and later
+          - platform: linux-amd64
+            os: ubuntu-22.04
+          - platform: linux-arm64
+            os: ubuntu-22.04-arm
+          - platform: macos-amd64
+            os: macos-15-intel
+          - platform: macos-arm64
+            os: macos-15
+          - platform: windows-amd64
+            os: windows-2025
+          - platform: windows-arm64
+            os: windows-11-arm
     defaults:
       run:
-        shell: ${{ startsWith(matrix.system.os, 'windows-') && 'pwsh' || 'bash' }} {0}
-    steps:
-      - name: Checkout 🛎️
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Ensure nearest tag is present
-        id: expandFetchDepth
         shell: bash
-        run: |
-          while ! git describe --tags --abbrev=0 >/dev/null 2>&1; do
-            CUR_DEPTH=$(git rev-list --count HEAD)
-            NEW_DEPTH=$(( CUR_DEPTH * 2 ))
-            if [ "$NEW_DEPTH" -gt 512 ]; then
-              echo "Reachable tag not found within 512 commits. Attempting unshallow fetch..."
-              git fetch --unshallow --tags origin "$GITHUB_REF" || true
-              if ! git describe --tags --abbrev=0 >/dev/null 2>&1; then
-                echo "Error: No tags found in the history of this branch."
-                exit 1
-              fi
-              break
-            fi
-            echo "Fetching additional $NEW_DEPTH commits ..."
-            git fetch --depth=$NEW_DEPTH --tags origin "$GITHUB_REF"
-          done
-          LATEST_TAG=$(git describe --tags --abbrev=0)
-          echo "Nearest tag found: $LATEST_TAG"
-      - name: Set up Python
-        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      PLATFORM: ${{ matrix.platform }}
+    steps:
+      # setuptools-scm takes the version from the tag, so the checkout needs
+      # the tags.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          python-version: ${{ matrix.py }}
-          architecture: ${{ matrix.system.arch }}
-      - name: Build standalone binary
+          ref: refs/tags/${{ github.event.release.tag_name || inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      # PyInstaller and what it brings come with their hashes; the package
+      # takes the exact versions pyproject.toml pins.
+      - name: Install PyInstaller and the package
         run: |
-          python -m venv venv
-          ${{ startsWith(matrix.system.os, 'windows-') && 'venv/Scripts/activate.ps1' || 'chmod +x venv/bin/activate && venv/bin/activate' }}
-          python -m pip install -U pip wheel setuptools setuptools_scm pyinstaller
-          python -m pip install .
-          python tools/build_standalone.py ${{ matrix.system.arch }}
-          ${{ startsWith(matrix.system.os, 'windows-') && 'deactivate' || 'chmod +x venv/bin/deactivate && venv/bin/deactivate' }}
-          ${{ startsWith(matrix.system.os, 'windows-') && 'Remove-Item venv -Recurse -Force' || 'rm -rf venv' }}
+          python -m pip install --disable-pip-version-check --require-hashes -r tools/standalone-requirements.txt
+          python -m pip install --disable-pip-version-check .
+      - name: Build the program
+        run: python tools/build_standalone.py
+      - name: Check that it starts and names the tag's version
+        run: |
+          suffix=""
+          if [ "$RUNNER_OS" = Windows ]; then suffix=".exe"; fi
+          program="dist/aqt-$PLATFORM$suffix"
+          mv "dist/aqt$suffix" "$program"
+          "$program" version 2>&1 | tee version.txt
+          grep -F "v${TAG#v} " version.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: aqt-${{ matrix.platform }}
+          path: dist/aqt-${{ matrix.platform }}*
+          if-no-files-found: error
 
-      - name: Upload to Release
-        uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de # 2.11.5
+  attach:
+    name: Attach the programs to the release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # The upload adds files to the release.
+      contents: write
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: dist/${{ matrix.system.output_file }}
-          asset_name: ${{ matrix.system.primary_artifact }}
-          tag: ${{ github.ref }}
-          overwrite: true
-        if: matrix.system.primary_artifact!='' && startsWith(github.ref, 'refs/tags/v')
-      - name: Upload to Release for all architectures
-        uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de # 2.11.5
-        with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: dist/${{ matrix.system.output_file }}
-          asset_name: ${{ matrix.system.secondary_artifact }}
-          tag: ${{ github.ref }}
-          overwrite: true
-        if: matrix.system.secondary_artifact!='' && startsWith(github.ref, 'refs/tags/v')
-      - name: Update continuous build
-        uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de # 2.11.5
-        with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          overwrite: true
-          prerelease: true
-          tag: Continuous
-          file: dist/${{ matrix.system.output_file }}
-          asset_name: ${{ matrix.system.primary_artifact }}
-        if: matrix.system.primary_artifact!='' && startsWith(github.ref, 'refs/tags/v')
-      - name: Update continuous build for all architectures
-        uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de # 2.11.5
-        with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          overwrite: true
-          prerelease: true
-          tag: Continuous
-          file: dist/${{ matrix.system.output_file }}
-          asset_name: ${{ matrix.system.secondary_artifact }}
-        if: matrix.system.secondary_artifact!='' && startsWith(github.ref, 'refs/tags/v')
+          path: programs
+          merge-multiple: true
+      - name: Attach them, replacing earlier copies
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" programs/aqt-* --clobber --repo "$GITHUB_REPOSITORY"
